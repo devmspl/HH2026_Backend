@@ -14,6 +14,7 @@ class UserBase(BaseModel):
     location: Optional[str] = None
     phone: Optional[str] = None
     parent_id: Optional[int] = None
+    avatar_url: Optional[str] = None
 
 # Properties to receive via API on creation
 class UserCreate(UserBase):
@@ -32,7 +33,8 @@ class UserInDBBase(UserBase):
 
 # Additional properties to return via API
 class User(UserInDBBase):
-    pass
+    created_at: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
 
 # Additional properties stored in DB
 class UserInDB(UserInDBBase):

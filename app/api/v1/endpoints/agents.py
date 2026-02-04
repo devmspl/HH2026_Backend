@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.api.v1.endpoints import login
 from app.core.auth import get_current_user, RoleChecker
+from app.core.role_permissions import can_create_role, get_creatable_roles
 from app.db.session import get_db
 from app.models.user import User, UserRole
 from app.schemas import user as user_schema
@@ -61,11 +62,20 @@ def create_agent(
     *,
     db: Session = Depends(get_db),
     agent_in: user_schema.UserCreate,
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.NATIONAL, UserRole.PROVINCIAL, UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP])),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """
-    Create new agent.
+    Create new agent with role-based access control.
     """
+    # Check if current user can create the requested role
+    if not can_create_role(current_user.role, agent_in.role):
+        creatable_roles = get_creatable_roles(current_user.role)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You don't have permission to create users with role '{agent_in.role}'. "
+                   f"You can only create: {[role.value for role in creatable_roles]}"
+        )
+    
     user = db.query(User).filter(User.email == agent_in.email).first()
     if user:
         raise HTTPException(
@@ -92,6 +102,19 @@ def create_agent(
     
     return db_obj
 
+@router.get("/creatable-roles")
+def get_creatable_roles_endpoint(
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Get list of roles that the current user can create.
+    """
+    creatable_roles = get_creatable_roles(current_user.role)
+    return {
+        "user_role": current_user.role.value,
+        "creatable_roles": [role.value for role in creatable_roles]
+    }
+
 @router.put("/{agent_id}", response_model=user_schema.User)
 def update_agent(
     *,
@@ -101,13 +124,42 @@ def update_agent(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """
-    Update an agent.
+    Update an agent with role-based access control.
     """
     agent = db.query(User).filter(User.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
     update_data = agent_in.dict(exclude_unset=True)
+    
+    # Role validation - check if user can change the role
+    if "role" in update_data:
+        new_role = update_data["role"]
+        
+        # Check if current user can assign this role
+        if not can_create_role(current_user.role, new_role):
+            creatable_roles = get_creatable_roles(current_user.role)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You don't have permission to change role to '{new_role}'. "
+                       f"You can only assign: {[role.value for role in creatable_roles]}"
+            )
+        
+        # Additional check: prevent users from modifying roles of users at or above their level
+        if get_role_hierarchy_level(agent.role) >= get_role_hierarchy_level(current_user.role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot modify users at or above your privilege level."
+            )
+    
+    # Status validation - prevent deactivating Super Admins
+    if "is_active" in update_data and not update_data["is_active"]:
+        if agent.role == UserRole.SUPER_ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot deactivate Super Admin users for system security."
+            )
+    
     if "password" in update_data:
         update_data["hashed_password"] = get_password_hash(update_data["password"])
         del update_data["password"]
@@ -175,10 +227,50 @@ def delete_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
+    # Prevent deletion of Super Admins
+    if agent.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot delete Super Admin users for system security."
+        )
+    
     agent_name = agent.full_name
-    db.delete(agent)
-    db.commit()
     
-    log_action(db, current_user.id, "DELETE_USER", f"Deleted user {agent_name} (ID: {agent_id})")
-    
-    return {"message": "Agent deleted successfully"}
+    try:
+        # Delete related records first to avoid foreign key constraints
+        from app.models.user import NotificationLog, Report, ReportEditHistory, ChatMessage, ReportImage, AuditLog
+        
+        # Delete notification logs
+        db.query(NotificationLog).filter(NotificationLog.recipient_id == agent_id).delete()
+        
+        # Delete chat messages (sender_id instead of user_id)
+        db.query(ChatMessage).filter(ChatMessage.sender_id == agent_id).delete()
+        
+        # Get agent's reports to delete related records first
+        agent_reports = db.query(Report).filter(Report.agent_id == agent_id).all()
+        
+        # Delete report images for each report
+        for report in agent_reports:
+            db.query(ReportImage).filter(ReportImage.report_id == report.id).delete()
+        
+        # Delete report edit history for each report (before deleting reports)
+        for report in agent_reports:
+            db.query(ReportEditHistory).filter(ReportEditHistory.report_id == report.id).delete()
+        
+        # Delete reports (after images and edit history are deleted)
+        db.query(Report).filter(Report.agent_id == agent_id).delete()
+        
+        # Delete any remaining report edit history by user_id
+        db.query(ReportEditHistory).filter(ReportEditHistory.user_id == agent_id).delete()
+        
+        # Delete audit logs for this user
+        db.query(AuditLog).filter(AuditLog.user_id == agent_id).delete()
+        
+        # Finally delete the agent
+        db.delete(agent)
+        db.commit()
+        
+        return {"message": "Agent deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete agent: {str(e)}")

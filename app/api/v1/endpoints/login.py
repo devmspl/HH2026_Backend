@@ -1,18 +1,28 @@
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
+
+from app import models, schemas
 from app.core import security
 from app.core.config import settings
-from app.db.session import get_db
 from app.core.auth import get_current_user
+from app.db.session import get_db
 from app.models.user import User
-from app.schemas.token import Token
 
 router = APIRouter()
 
-@router.post("/login/access-token", response_model=Token)
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user_id: int
+    full_name: str
+    role: str
+    avatar_url: str | None = None
+
+@router.post("/login/access-token", response_model=LoginResponse)
 def login_access_token(
     db: Session = Depends(get_db), form_data: OAuth2PasswordRequestForm = Depends()
 ) -> Any:
@@ -33,7 +43,17 @@ def login_access_token(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Inactive user",
         )
+    
+    # Update last_seen timestamp
+    user.last_seen = datetime.utcnow()
+    db.add(user)
+    db.commit()
+    
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    # Debug log to check avatar_url
+    print(f"DEBUG: User avatar_url: {user.avatar_url}")
+    
     return {
         "access_token": security.create_access_token(
             user.id, expires_delta=access_token_expires
@@ -41,7 +61,8 @@ def login_access_token(
         "token_type": "bearer",
         "user_id": user.id,
         "full_name": user.full_name,
-        "role": user.role
+        "role": user.role,
+        "avatar_url": str(user.avatar_url) if user.avatar_url else None
     }
 
 @router.post("/login/test-token", response_model=Any)

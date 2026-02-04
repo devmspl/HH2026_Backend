@@ -22,7 +22,7 @@ def get_current_user(
         token_data = TokenData(id=payload.get("sub"))
     except (JWTError, Exception):
         raise HTTPException(
-            status_code=status.HTTP_03_FORBIDDEN,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Could not validate credentials",
         )
     user = db.query(User).filter(User.id == token_data.id).first()
@@ -39,7 +39,7 @@ class RoleChecker:
     def __call__(self, user: User = Depends(get_current_user)):
         if user.role not in self.allowed_roles and user.role != UserRole.SUPER_ADMIN:
             raise HTTPException(
-                status_code=status.HTTP_03_FORBIDDEN,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"The user doesn't have enough privileges. Required: {self.allowed_roles}",
             )
         return user
