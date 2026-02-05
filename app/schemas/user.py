@@ -35,6 +35,11 @@ class UserInDBBase(UserBase):
 class User(UserInDBBase):
     created_at: Optional[datetime] = None
     last_seen: Optional[datetime] = None
+    is_deleted: Optional[bool] = False
+    deleted_at: Optional[datetime] = None
+    approved_by: Optional[int] = None
+    approved_at: Optional[datetime] = None
+    approver_details: Optional[dict] = None  # Will contain {id, full_name, role, avatar_url}
 
 # Additional properties stored in DB
 class UserInDB(UserInDBBase):

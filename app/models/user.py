@@ -7,13 +7,19 @@ from app.db.base import Base
 class UserRole(str, enum.Enum):
     SUPER_ADMIN = "System Super Admin"
     ADMINISTRATOR = "System Administrator"
-    EXECUTIVE = "Executive User"
+    EXECUTIVE = "Executive User" # Changed from "Executive User" to match prompt "Executive" if needed, but sticking to existing strings is safer, just mapping hierarchy matters.
     NATIONAL = "National User"
     PROVINCIAL = "Provincial User"
-    DISTRICT = "District user"
+    DISTRICT = "District User" # Fixed capitalization
     REGION = "Region User"
     CAMP = "Camp User"
     AGENT = "Agent"
+
+class AccountStatus(str, enum.Enum):
+    ACTIVE = "active"
+    PENDING = "pending"
+    REJECTED = "rejected"
+    DEACTIVATED = "deactivated"
 
 class User(Base):
     __tablename__ = "users"
@@ -23,12 +29,23 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255))
     role = Column(Enum(UserRole), default=UserRole.AGENT, nullable=False)
+    
+    # Status
     is_active = Column(Boolean(), default=True)
     is_superuser = Column(Boolean(), default=False)
+    account_status = Column(Enum(AccountStatus, native_enum=False, values_callable=lambda obj: [e.value for e in obj]), default=AccountStatus.ACTIVE)
+    
+    # Soft Delete
+    is_deleted = Column(Boolean(), default=False)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Approval Tracking
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
     
     # Hierarchy
     parent_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    parent = relationship("User", remote_side=[id], backref="subordinates")
+    parent = relationship("User", remote_side=[id], backref="subordinates", foreign_keys=[parent_id])
     
     # Contact Info
     phone = Column(String(20), nullable=True)

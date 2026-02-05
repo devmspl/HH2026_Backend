@@ -1,61 +1,163 @@
-from typing import Any, List
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Any, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from app.api.v1.endpoints import login
 from app.core.auth import get_current_user, RoleChecker
 from app.core.role_permissions import can_create_role, get_creatable_roles
 from app.db.session import get_db
-from app.models.user import User, UserRole
+from app.models.user import User, UserRole, AccountStatus
 from app.schemas import user as user_schema
 from app.core.security import get_password_hash
 from app.core.audit import log_action
 
 router = APIRouter()
 
+from app.core.role_permissions import ROLE_HIERARCHY
+
+def get_role_level(role: UserRole) -> int:
+    return ROLE_HIERARCHY.get(role, 0)
+
+
 @router.get("/", response_model=List[user_schema.User])
 def read_agents(
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL, UserRole.PROVINCIAL, UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP])),
+    current_user: User = Depends(get_current_user),
     skip: int = 0,
     limit: int = 100,
+    status: Optional[str] = None,
 ) -> Any:
     """
-    Retrieve agents.
-    Hierarchy-based filtering should be applied here in a real scenario.
+    Retrieve agents based on role hierarchy.
+    Shows users with equal or lower role level.
     """
-    # Simple filtering: return only users with role AGENT or based on subordinates logic
-    # Debug info
-    print(f"DEBUG: Current User Role: {current_user.role} (type: {type(current_user.role)})")
+    current_level = get_role_level(current_user.role)
     
-    # Robust comparison: Check string value or Enum or is_superuser flag
-    is_super = False
+    # Base query
+    query = db.query(User)
     
-    # Check 1: Database flag
-    if current_user.is_superuser:
-        is_super = True
-    
-    # Check 2: Direct Enum comparison
-    elif current_user.role == UserRole.SUPER_ADMIN:
-        is_super = True
+    # Filter by status if provided
+    if status:
+        query = query.filter(User.account_status == status)
         
-    # Check 3: String value comparison (handling Enum vs String)
-    elif str(current_user.role) == "System Super Admin":
-        is_super = True
+    # Exclude deleted by default in main list
+    query = query.filter(User.is_deleted == False)
+    
+    # Role-based filtering
+    # 1. Get all roles that are <= current user level
+    allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level <= current_level]
+    
+    # 2. Apply filter
+    query = query.filter(User.role.in_(allowed_roles))
+    
+    # 3. Apply pagination
+    users = query.offset(skip).limit(limit).all()
+    
+    # 4. Attach approver details for each user
+    result = []
+    for user in users:
+        user_dict = user_schema.User.model_validate(user).model_dump()
         
-    # Check 4: Accessing .value if it's an enum
-    elif hasattr(current_user.role, 'value') and current_user.role.value == "System Super Admin":
-        is_super = True
+        # Fetch approver details if approved_by exists
+        if user.approved_by:
+            approver = db.query(User).filter(User.id == user.approved_by).first()
+            if approver:
+                user_dict['approver_details'] = {
+                    'id': approver.id,
+                    'full_name': approver.full_name,
+                    'role': approver.role.value if approver.role else None,
+                    'avatar_url': approver.avatar_url
+                }
+        
+        result.append(user_dict)
+        
+    return result
 
-    if is_super:
-        users = db.query(User).offset(skip).limit(limit).all()
-    else:
-        # For non-super admins, we typically show subordinates.
-        # BUT, to allow assigning YOURSELF as a manager (if you have permission to add users), 
-        # you need to see yourself in the list.
-        # So we fetch subordinates OR the user themselves.
-        users = db.query(User).filter((User.parent_id == current_user.id) | (User.id == current_user.id)).all()
-        
+@router.get("/approval-list", response_model=List[user_schema.User])
+def get_approval_list(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Get list of users waiting for approval.
+    Show pending users whose role is just below or equal to the current user (depending on who needs to approve).
+    Logic: Higher role approves lower role's self-creation.
+    If 'Executive' creates 'Executive', 'System Admin' approves.
+    So 'System Admin' looks for 'Pending' users with role 'Executive'.
+    """
+    current_level = get_role_level(current_user.role)
+    
+    # We look for users who are PENDING and have a role that this user is authorized to approve.
+    # Typically, you approve users immediately below you who were created by someone of their own rank.
+    # For simplicity/broadness: Show ALL pending users that are strictly LOWER than current user.
+    
+    allowed_roles_to_approve = [role for role, level in ROLE_HIERARCHY.items() if level < current_level]
+    
+    users = db.query(User).filter(
+        User.account_status == AccountStatus.PENDING,
+        User.role.in_(allowed_roles_to_approve)
+    ).all()
+    
     return users
+
+@router.post("/{agent_id}/approve", response_model=user_schema.User)
+def approve_agent(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Approve a pending agent.
+    """
+    agent = db.query(User).filter(User.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if agent.account_status != AccountStatus.PENDING:
+        raise HTTPException(status_code=400, detail="User is not pending approval")
+        
+    # Check hierarchy
+    if get_role_level(current_user.role) <= get_role_level(agent.role):
+        raise HTTPException(status_code=403, detail="You cannot approve users with equal or higher rank")
+        
+    agent.account_status = AccountStatus.ACTIVE
+    agent.is_active = True
+    agent.approved_by = current_user.id
+    from datetime import datetime
+    agent.approved_at = datetime.now()
+    db.commit()
+    db.refresh(agent)
+    
+    log_action(db, current_user.id, "APPROVE_USER", f"Approved user {agent.full_name} ({agent.role})")
+    return agent
+
+@router.post("/{agent_id}/reject", response_model=user_schema.User)
+def reject_agent(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Reject a pending agent.
+    """
+    agent = db.query(User).filter(User.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if agent.account_status != AccountStatus.PENDING:
+        raise HTTPException(status_code=400, detail="User is not pending approval")
+
+    # Check hierarchy
+    if get_role_level(current_user.role) <= get_role_level(agent.role):
+        raise HTTPException(status_code=403, detail="You cannot reject users with equal or higher rank")
+        
+    agent.account_status = AccountStatus.REJECTED
+    agent.is_active = False # Ensure they can't login
+    db.commit()
+    db.refresh(agent)
+    
+    log_action(db, current_user.id, "REJECT_USER", f"Rejected user {agent.full_name} ({agent.role})")
+    return agent
+
 
 @router.post("/", response_model=user_schema.User)
 def create_agent(
@@ -65,15 +167,16 @@ def create_agent(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """
-    Create new agent with role-based access control.
+    Create new agent with role-based access control and approval workflow.
     """
-    # Check if current user can create the requested role
-    if not can_create_role(current_user.role, agent_in.role):
-        creatable_roles = get_creatable_roles(current_user.role)
-        raise HTTPException(
+    current_level = get_role_level(current_user.role)
+    new_role_level = get_role_level(agent_in.role)
+
+    # 1. Validation: Cannot create higher rank
+    if new_role_level > current_level:
+         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"You don't have permission to create users with role '{agent_in.role}'. "
-                   f"You can only create: {[role.value for role in creatable_roles]}"
+            detail=f"You cannot create a user with a higher role than yourself."
         )
     
     user = db.query(User).filter(User.email == agent_in.email).first()
@@ -82,13 +185,31 @@ def create_agent(
             status_code=400,
             detail="The user with this username already exists in the system.",
         )
+        
+    # 2. Determine Status
+    # If same role created -> Pending Approval
+    # If lower role created -> Active
+    account_status = AccountStatus.ACTIVE
+    is_active = True
+    
+    if new_role_level == current_level:
+        # If Super Admin creates Super Admin, they are effectively the highest authority, so maybe auto-approve?
+        # But generally, prompt says "same role user... has to approval from there higher role".
+        # If System Super Admin creates System Super Admin, there is no higher role. 
+        # Assume Super Admin creation is always instant or handled specially?
+        # Let's exempt Super Admin from this check or assume it's fine.
+        if current_user.role != UserRole.SUPER_ADMIN:
+            account_status = AccountStatus.PENDING
+            is_active = False # Inactive until approved
+        
     db_obj = User(
         email=agent_in.email,
         hashed_password=get_password_hash(agent_in.password),
         full_name=agent_in.full_name,
         role=agent_in.role,
         parent_id=agent_in.parent_id if agent_in.parent_id else current_user.id,
-        is_active=True,
+        is_active=is_active,
+        account_status=account_status,
         last_lat=agent_in.last_lat,
         last_lng=agent_in.last_lng,
         location=agent_in.location,
@@ -98,7 +219,7 @@ def create_agent(
     db.commit()
     db.refresh(db_obj)
     
-    log_action(db, current_user.id, "CREATE_USER", f"Created user {db_obj.full_name} ({db_obj.role})")
+    log_action(db, current_user.id, "CREATE_USER", f"Created user {db_obj.full_name} ({db_obj.role}). Status: {account_status}")
     
     return db_obj
 
@@ -109,10 +230,16 @@ def get_creatable_roles_endpoint(
     """
     Get list of roles that the current user can create.
     """
-    creatable_roles = get_creatable_roles(current_user.role)
+    current_level = get_role_level(current_user.role)
+    # User can create roles <= their own level
+    creatable = [role.value for role, level in ROLE_HIERARCHY.items() if level <= current_level]
+    
+    # Sort them for display (High to low or low to high)
+    # Sorting logic if needed
+    
     return {
         "user_role": current_user.role.value,
-        "creatable_roles": [role.value for role in creatable_roles]
+        "creatable_roles": creatable
     }
 
 @router.put("/{agent_id}", response_model=user_schema.User)
@@ -130,28 +257,37 @@ def update_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
+    current_level = get_role_level(current_user.role)
+    agent_level = get_role_level(agent.role)
+    
+    # Permission Check: Can only edit users with Equal or Lower level
+    if current_level < agent_level:
+         raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot update a user with a higher role than yourself."
+        )
+         
+    # If editing SAME level user, restrict what can be done? 
+    # Usually you can't edit your peer's profile unless you are admin.
+    # Prompt says "hr user ko bs as user ka asses rhega... system administrator: (..., agent)"
+    # This implies System Admin can edit System Admin?
+    # Usually editing yourself is fine. Editing other System Admin might typically be allowed.
+    # Restricting editing of OTHER peers might be safer, but adhering to "Access" rule:
+    # If I see them, I can edit them.
+    
     update_data = agent_in.dict(exclude_unset=True)
     
     # Role validation - check if user can change the role
     if "role" in update_data:
         new_role = update_data["role"]
+        new_role_level = get_role_level(new_role)
         
-        # Check if current user can assign this role
-        if not can_create_role(current_user.role, new_role):
-            creatable_roles = get_creatable_roles(current_user.role)
+        if new_role_level >= current_level and current_user.role != UserRole.SUPER_ADMIN:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You don't have permission to change role to '{new_role}'. "
-                       f"You can only assign: {[role.value for role in creatable_roles]}"
+                detail=f"You cannot assign a role equal to or higher than your own."
             )
-        
-        # Additional check: prevent users from modifying roles of users at or above their level
-        if get_role_hierarchy_level(agent.role) >= get_role_hierarchy_level(current_user.role):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You cannot modify users at or above your privilege level."
-            )
-    
+            
     # Status validation - prevent deactivating Super Admins
     if "is_active" in update_data and not update_data["is_active"]:
         if agent.role == UserRole.SUPER_ADMIN:
@@ -218,7 +354,7 @@ def get_agent_logs(
 def delete_agent(
     agent_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR])),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Delete an agent.
@@ -227,6 +363,13 @@ def delete_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
+    current_level = get_role_level(current_user.role)
+    agent_level = get_role_level(agent.role)
+
+    # Permission Check
+    if current_level <= agent_level:
+        raise HTTPException(status_code=403, detail="You cannot delete a user with equal or higher rank than yourself")
+        
     # Prevent deletion of Super Admins
     if agent.role == UserRole.SUPER_ADMIN:
         raise HTTPException(
@@ -237,40 +380,83 @@ def delete_agent(
     agent_name = agent.full_name
     
     try:
-        # Delete related records first to avoid foreign key constraints
-        from app.models.user import NotificationLog, Report, ReportEditHistory, ChatMessage, ReportImage, AuditLog
+        # Soft Delete
+        from datetime import datetime
+        agent.is_deleted = True
+        agent.deleted_at = datetime.now()
+        agent.is_active = False # Disable login
         
-        # Delete notification logs
-        db.query(NotificationLog).filter(NotificationLog.recipient_id == agent_id).delete()
-        
-        # Delete chat messages (sender_id instead of user_id)
-        db.query(ChatMessage).filter(ChatMessage.sender_id == agent_id).delete()
-        
-        # Get agent's reports to delete related records first
-        agent_reports = db.query(Report).filter(Report.agent_id == agent_id).all()
-        
-        # Delete report images for each report
-        for report in agent_reports:
-            db.query(ReportImage).filter(ReportImage.report_id == report.id).delete()
-        
-        # Delete report edit history for each report (before deleting reports)
-        for report in agent_reports:
-            db.query(ReportEditHistory).filter(ReportEditHistory.report_id == report.id).delete()
-        
-        # Delete reports (after images and edit history are deleted)
-        db.query(Report).filter(Report.agent_id == agent_id).delete()
-        
-        # Delete any remaining report edit history by user_id
-        db.query(ReportEditHistory).filter(ReportEditHistory.user_id == agent_id).delete()
-        
-        # Delete audit logs for this user
-        db.query(AuditLog).filter(AuditLog.user_id == agent_id).delete()
-        
-        # Finally delete the agent
-        db.delete(agent)
         db.commit()
+        db.refresh(agent)
         
-        return {"message": "Agent deleted successfully"}
+        log_action(db, current_user.id, "DELETE_USER", f"Soft deleted user {agent_name} ({agent.role})")
+        
+        return {"message": "Agent deleted successfully (Soft Delete)"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete agent: {str(e)}")
+
+@router.get("/deleted", response_model=List[user_schema.User])
+def read_deleted_agents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    skip: int = 0,
+    limit: int = 100,
+) -> Any:
+    """
+    Retrieve deleted agents based on role hierarchy.
+    """
+    current_level = get_role_level(current_user.role)
+    
+    # Base query
+    query = db.query(User).filter(User.is_deleted == True)
+    
+    # Role-based filtering
+    allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level <= current_level]
+    query = query.filter(User.role.in_(allowed_roles))
+    
+    users = query.offset(skip).limit(limit).all()
+        
+    return users
+
+@router.post("/{agent_id}/recover", response_model=user_schema.User)
+def recover_agent(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Recover a soft-deleted agent.
+    """
+    agent = db.query(User).filter(User.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if not agent.is_deleted:
+        raise HTTPException(status_code=400, detail="User is not deleted")
+
+    current_level = get_role_level(current_user.role)
+    agent_level = get_role_level(agent.role)
+
+    # Permission Check
+    if current_level <= agent_level:
+        raise HTTPException(status_code=403, detail="You cannot recover a user with equal or higher rank than yourself")
+        
+    agent.is_deleted = False
+    agent.deleted_at = None
+    agent.is_active = True # Re-enable login? Or status dependent? 
+    # If account_status was active, is_active should be True. 
+    # If account_status was pending, maybe they shouldn't be active?
+    # For now, let's restore is_active based on account_status.
+    if agent.account_status == AccountStatus.ACTIVE:
+        agent.is_active = True
+    elif agent.account_status == AccountStatus.PENDING:
+        agent.is_active = False
+    
+    db.commit()
+    db.refresh(agent)
+    
+    log_action(db, current_user.id, "RECOVER_USER", f"Recovered user {agent.full_name} ({agent.role})")
+    
+    return agent
+
