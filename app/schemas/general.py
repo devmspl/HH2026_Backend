@@ -29,7 +29,7 @@ class ReportBase(BaseModel):
 
 class ReportCreate(ReportBase):
     agent_id: int
-    images: Optional[List[str]] = None
+    media: Optional[List[dict]] = None # List of {url, type, name}
     status: Optional[str] = "pending"
 
 class ReportUpdate(BaseModel):
@@ -38,28 +38,36 @@ class ReportUpdate(BaseModel):
     status: Optional[str] = None
     gps_lat: Optional[float] = None
     gps_lng: Optional[float] = None
-    images: Optional[List[str]] = None
+    media: Optional[List[dict]] = None
 
 class ReportEditHistory(BaseModel):
     id: int
     changes: str
+    user_id: int
+    user_name: Optional[str] = None
     timestamp: datetime
     class Config:
         from_attributes = True
 
-class ReportImage(BaseModel):
+class ReportMedia(BaseModel):
     id: int
-    image_url: str
+    file_url: str
+    file_type: Optional[str] = "image"
+    file_name: Optional[str] = None
     class Config:
         from_attributes = True
 
 class Report(ReportBase):
     id: int
     agent_id: int
+    agent_name: Optional[str] = None
+    agent_role: Optional[str] = None
+    agent_email: Optional[str] = None
+    agent_phone: Optional[str] = None
     status: str
     confirmation_no: str
     created_at: datetime
-    images: List[ReportImage] = []
+    media: List[ReportMedia] = []
     edits: List[ReportEditHistory] = []
     
     class Config:

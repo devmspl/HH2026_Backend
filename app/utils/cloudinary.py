@@ -9,16 +9,19 @@ cloudinary.config(
     secure=True
 )
 
-def upload_image(file, folder="ccns_reports"):
+def upload_file(file, folder="ccns_reports"):
     """
-    Upload an image to cloudinary and return the URL.
+    Upload a file (image, video, pdf, etc.) to cloudinary and return the URL.
     """
     try:
-        result = cloudinary.uploader.upload(file, folder=folder)
+        result = cloudinary.uploader.upload(file, folder=folder, resource_type="auto")
         return result.get("secure_url")
     except Exception as e:
         print(f"Cloudinary upload failed: {e}")
         return None
+
+# Alias for backward compatibility
+upload_image = upload_file
 
 def delete_image(public_id):
     """

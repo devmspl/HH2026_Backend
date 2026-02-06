@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.core.auth import get_current_user
 from app.db.session import get_db
-from app.models.user import User, UserRole, Report, NotificationLog, AuditLog, ReportImage
+from app.models.user import User, UserRole, Report, NotificationLog, AuditLog, ReportMedia
 from app.schemas import general as general_schema
 
 router = APIRouter()
@@ -105,13 +105,14 @@ def get_media(
     """
     Get all uploaded media items.
     """
-    items = db.query(ReportImage).all()
+    from app.models.user import ReportMedia
+    items = db.query(ReportMedia).all()
     results = []
     for item in items:
         results.append({
             "id": item.id,
             "report_id": item.report_id,
-            "image_url": item.image_url,
+            "image_url": item.file_url,
             "agent_name": item.report.agent.full_name if item.report and item.report.agent else "Unknown",
             "report_title": item.report.title if item.report else "Deleted Report",
             "created_at": item.report.created_at if item.report else None

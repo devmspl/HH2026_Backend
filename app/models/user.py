@@ -89,16 +89,18 @@ class Report(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     agent = relationship("User", back_populates="reports")
-    images = relationship("ReportImage", back_populates="report", cascade="all, delete-orphan")
+    media = relationship("ReportMedia", back_populates="report", cascade="all, delete-orphan")
     edits = relationship("ReportEditHistory", back_populates="report", cascade="all, delete-orphan")
 
-class ReportImage(Base):
-    __tablename__ = "report_images"
+class ReportMedia(Base):
+    __tablename__ = "report_media"
     id = Column(Integer, primary_key=True, index=True)
     report_id = Column(Integer, ForeignKey("reports.id"), nullable=False)
-    image_url = Column(Text, nullable=False)
+    file_url = Column(Text, nullable=False)
+    file_type = Column(String(50), nullable=True) # image, pdf, video, doc, etc.
+    file_name = Column(String(255), nullable=True)
     
-    report = relationship("Report", back_populates="images")
+    report = relationship("Report", back_populates="media")
 
 class ReportEditHistory(Base):
     __tablename__ = "report_edit_history"
