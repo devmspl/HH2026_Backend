@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -99,14 +99,33 @@ def get_audit_logs(
 
 @router.get("/media", response_model=List[general_schema.MediaItem])
 def get_media(
+    agent_id: Optional[int] = None,
+    search: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Get all uploaded media items.
+    Get all uploaded media items with filtering and role-based visibility.
     """
-    from app.models.user import ReportMedia
-    items = db.query(ReportMedia).all()
+    from app.models.user import ReportMedia, Report
+    query = db.query(ReportMedia).join(Report)
+    
+    # Permission Logic: Agents only see their own media
+    if current_user.role == UserRole.AGENT:
+        query = query.filter(Report.agent_id == current_user.id)
+    
+    # Optional Filters
+    if agent_id:
+        query = query.filter(Report.agent_id == agent_id)
+    
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            (Report.title.ilike(search_filter)) |
+            (Report.agent.has(full_name=search_filter))
+        )
+    
+    items = query.all()
     results = []
     for item in items:
         results.append({
