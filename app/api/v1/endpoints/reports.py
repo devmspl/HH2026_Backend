@@ -66,6 +66,7 @@ def read_reports(
             report.agent_role = report.agent.role
             report.agent_email = report.agent.email
             report.agent_phone = report.agent.phone
+            report.agent_avatar = report.agent.avatar_url
         
         for edit in report.edits:
             edit_user = db.query(User).filter(User.id == edit.user_id).first()

@@ -64,6 +64,7 @@ class Report(ReportBase):
     agent_role: Optional[str] = None
     agent_email: Optional[str] = None
     agent_phone: Optional[str] = None
+    agent_avatar: Optional[str] = None
     status: str
     confirmation_no: str
     created_at: datetime
