@@ -29,6 +29,8 @@ class ReportBase(BaseModel):
 
 class ReportCreate(ReportBase):
     agent_id: int
+    survey_id: int
+    survey_responses: Optional[dict] = None # For SMS notification
     media: Optional[List[dict]] = None # List of {url, type, name}
     status: Optional[str] = "pending"
 
@@ -39,6 +41,7 @@ class ReportUpdate(BaseModel):
     gps_lat: Optional[float] = None
     gps_lng: Optional[float] = None
     media: Optional[List[dict]] = None
+    survey_id: Optional[int] = None
 
 class ReportEditHistory(BaseModel):
     id: int
@@ -70,6 +73,8 @@ class Report(ReportBase):
     created_at: datetime
     media: List[ReportMedia] = []
     edits: List[ReportEditHistory] = []
+    survey_id: Optional[int] = None
+    survey_name: Optional[str] = None
     
     class Config:
         from_attributes = True

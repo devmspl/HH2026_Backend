@@ -1,6 +1,6 @@
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, EmailStr, ConfigDict
-from app.models.user import UserRole, SurveyStatus
+from app.models.user import UserRole, SurveyStatus, SurveyType, TargetRespondents, AttachmentRequirement
 from datetime import datetime
 
 # Shared properties
@@ -27,9 +27,7 @@ class UserUpdate(UserBase):
 
 class UserInDBBase(UserBase):
     id: Optional[int] = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Additional properties to return via API
 class User(UserInDBBase):
@@ -44,16 +42,35 @@ class User(UserInDBBase):
 # Additional properties stored in DB
 class UserInDB(UserInDBBase):
     hashed_password: str
+
 # Survey schemas
 class SurveyBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    name: str
-    status: Optional[SurveyStatus] = SurveyStatus.DRAFT
+    name: str # Survey Title
+    form_type: SurveyType = SurveyType.NATIONAL # Survey Type
+    description: Optional[str] = None # Survey Description / Objective
+    target_respondents: TargetRespondents = TargetRespondents.ALL # Target Respondents
+    instructions: Optional[str] = None # Instructions for Agents
+    allow_edit: bool = False # Allow Edit After Submission?
+    attachment_required: AttachmentRequirement = AttachmentRequirement.OPTIONAL # Attachment Required?
+    status: SurveyStatus = SurveyStatus.DRAFT
 
 class SurveyCreate(SurveyBase):
-    pass
+    target_user_ids: List[int] = []
+
+class SurveyUpdate(BaseModel):
+    name: Optional[str] = None
+    form_type: Optional[SurveyType] = None
+    description: Optional[str] = None
+    target_respondents: Optional[TargetRespondents] = None
+    instructions: Optional[str] = None
+    allow_edit: Optional[bool] = None
+    attachment_required: Optional[AttachmentRequirement] = None
+    status: Optional[SurveyStatus] = None
+    target_user_ids: Optional[List[int]] = None
 
 class SurveyOut(SurveyBase):
     id: int
     created_by: int
     created_at: datetime
+    target_user_ids: Optional[List[int]] = None # We can map this manually or use a property

@@ -8,6 +8,7 @@ from app.models.user import User, UserRole, Report, ReportMedia, ReportEditHisto
 from app.schemas import general as general_schema
 from app.core.audit import log_action
 import uuid
+import json
 
 router = APIRouter()
 
@@ -68,6 +69,9 @@ def read_reports(
             report.agent_phone = report.agent.phone
             report.agent_avatar = report.agent.avatar_url
         
+        if report.survey:
+            report.survey_name = report.survey.name
+        
         for edit in report.edits:
             edit_user = db.query(User).filter(User.id == edit.user_id).first()
             if edit_user:
@@ -85,18 +89,62 @@ def create_report(
     """
     Create new report.
     """
+    from app.models.user import Survey, TargetRespondents
+    survey = db.query(Survey).filter(Survey.id == report_in.survey_id).first()
+    if not survey:
+        raise HTTPException(status_code=404, detail="Survey not found")
+    
+    if survey.status != "active":
+        raise HTTPException(status_code=400, detail="Cannot submit reports for a non-active survey")
+
+    # Security Check: Ensure user is assigned to this survey if it's TargetRespondents.SELECTED
+    if current_user.role == UserRole.AGENT:
+        # Agents can only submit for themselves
+        if report_in.agent_id != current_user.id:
+             raise HTTPException(status_code=403, detail="Agents can only submit reports for themselves")
+        
+        # Check survey assignment
+        if survey.target_respondents == TargetRespondents.SELECTED:
+            assigned_user_ids = [u.id for u in survey.target_users]
+            if current_user.id not in assigned_user_ids:
+                 raise HTTPException(status_code=403, detail="You are not assigned to this survey")
+    else:
+        # Admins can submit for any agent, check if the *assigned agent* (report_in.agent_id) is allowed for this survey?
+        # Maybe optional for admins, but let's enforce consistency: The REPORT agent must be valid for the survey.
+        if survey.target_respondents == TargetRespondents.SELECTED:
+            assigned_user_ids = [u.id for u in survey.target_users]
+            if report_in.agent_id not in assigned_user_ids:
+                 # Warning or Error? Let's make it an error to prevent data inconsistency
+                 raise HTTPException(status_code=400, detail="The selected agent is not assigned to this survey")
+
     db_obj = Report(
         agent_id=report_in.agent_id,
+        survey_id=report_in.survey_id,
         title=report_in.title,
         description=report_in.description,
         gps_lat=report_in.gps_lat,
         gps_lng=report_in.gps_lng,
         confirmation_no=f"CONF-{uuid.uuid4().hex[:8].upper()}",
-        status=report_in.status or "pending"
+        status=report_in.status or "pending",
+        survey_data=json.dumps(report_in.survey_responses) if report_in.survey_responses else None
     )
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
+
+    # Trigger SMS notification for all report submissions
+    from app.utils.sms_survey import convert_report_to_sms, send_survey_sms
+    from app.models.user import User
+    
+    agent = db.query(User).filter(User.id == report_in.agent_id).first()
+    agent_name = agent.full_name if agent else "Unknown Agent"
+    
+    sms_text = convert_report_to_sms(
+        report_in.survey_responses, 
+        report_in.title, 
+        agent_name
+    )
+    send_survey_sms(sms_text, db)
 
     # Process media if provided
     if report_in.media:

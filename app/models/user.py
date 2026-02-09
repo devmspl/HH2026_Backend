@@ -5,15 +5,15 @@ from sqlalchemy.sql import func
 from app.db.base import Base
 
 class UserRole(str, enum.Enum):
-    SUPER_ADMIN = "System Super Admin"
-    ADMINISTRATOR = "System Administrator"
-    EXECUTIVE = "Executive User" # Changed from "Executive User" to match prompt "Executive" if needed, but sticking to existing strings is safer, just mapping hierarchy matters.
-    NATIONAL = "National User"
-    PROVINCIAL = "Provincial User"
-    DISTRICT = "District User" # Fixed capitalization
-    REGION = "Region User"
-    CAMP = "Camp User"
-    AGENT = "Agent"
+    SUPER_ADMIN = "SUPER_ADMIN"
+    ADMINISTRATOR = "ADMINISTRATOR"
+    EXECUTIVE = "EXECUTIVE"
+    NATIONAL = "NATIONAL"
+    PROVINCIAL = "PROVINCIAL"
+    DISTRICT = "DISTRICT"
+    REGION = "REGION"
+    CAMP = "CAMP"
+    AGENT = "AGENT"
 
 class AccountStatus(str, enum.Enum):
     ACTIVE = "active"
@@ -74,6 +74,7 @@ class Report(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     agent_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    survey_id = Column(Integer, ForeignKey("surveys.id"), nullable=True)
     title = Column(String(255), nullable=False)
     description = Column(String, nullable=True)
     status = Column(Enum(ReportStatus), default=ReportStatus.PENDING)
@@ -87,8 +88,12 @@ class Report(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Store dynamic survey results as JSON string
+    survey_data = Column(Text, nullable=True)
 
     agent = relationship("User", back_populates="reports")
+    survey = relationship("Survey", backref="reports")
     media = relationship("ReportMedia", back_populates="report", cascade="all, delete-orphan")
     edits = relationship("ReportEditHistory", back_populates="report", cascade="all, delete-orphan")
 
@@ -117,13 +122,119 @@ class SurveyStatus(str, enum.Enum):
     ACTIVE = "active"
     ENDED = "ended"
 
+class SurveyType(str, enum.Enum):
+    NATIONAL = "National Crops Survey"
+    REGIONAL = "Regional Crops Survey"
+
+class TargetRespondents(str, enum.Enum):
+    ALL = "All Agents"
+    SELECTED = "Selected Agents"
+
+class AttachmentRequirement(str, enum.Enum):
+    YES = "Yes"
+    OPTIONAL = "Optional"
+    NO = "No"
+
 class Survey(Base):
     __tablename__ = "surveys"
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False) # Survey Title
+    form_type = Column(Enum(SurveyType), default=SurveyType.NATIONAL) # Survey Type
+    description = Column(Text, nullable=True) # Survey Description / Objective
+    target_respondents = Column(Enum(TargetRespondents), default=TargetRespondents.ALL) # Target Respondents
+    instructions = Column(Text, nullable=True) # Instructions for Agents
+    allow_edit = Column(Boolean, default=False) # Allow Edit After Submission?
+    attachment_required = Column(Enum(AttachmentRequirement), default=AttachmentRequirement.OPTIONAL) # Attachment Required?
     status = Column(Enum(SurveyStatus), default=SurveyStatus.DRAFT)
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Target Users (for Selected Agents)
+    target_users = relationship("User", secondary="survey_targets")
+
+survey_targets = Table(
+    "survey_targets",
+    Base.metadata,
+    Column("survey_id", Integer, ForeignKey("surveys.id"), primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),
+)
+
+class CropFamily(Base):
+    __tablename__ = "crop_families"
+    id = Column(Integer, primary_key=True, index=True)
+    family_name = Column(String(255), nullable=False)
+    label = Column(String(255), nullable=True)
+    picture = Column(String(500), nullable=True)
+
+class NationalCrop(Base):
+    __tablename__ = "national_crops"
+    id = Column(Integer, primary_key=True, index=True)
+    crop_name = Column(String(255), nullable=False)
+    family_id = Column(Integer, ForeignKey("crop_families.id"))
+    picture = Column(String(500), nullable=True)
+    
+    family = relationship("CropFamily")
+
+class Province(Base):
+    __tablename__ = "provinces"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    total_customers = Column(Integer, default=0)
+    main_crop_family_id = Column(Integer, ForeignKey("crop_families.id"), nullable=True)
+    
+    main_crop_family = relationship("CropFamily")
+
+class District(Base):
+    __tablename__ = "districts"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    province_id = Column(Integer, ForeignKey("provinces.id"))
+    total_customers = Column(Integer, default=0)
+    district_type = Column(String(100), nullable=True)
+    main_crop_family_id = Column(Integer, ForeignKey("crop_families.id"), nullable=True)
+    
+    province = relationship("Province")
+    main_crop_family = relationship("CropFamily")
+
+class Region(Base):
+    __tablename__ = "regions"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    district_id = Column(Integer, ForeignKey("districts.id"))
+    province_id = Column(Integer, ForeignKey("provinces.id"))
+    total_customers = Column(Integer, default=0)
+    region_type = Column(String(100), nullable=True)
+    main_crop_family_id = Column(Integer, ForeignKey("crop_families.id"), nullable=True)
+    
+    district = relationship("District")
+    province = relationship("Province")
+    main_crop_family = relationship("CropFamily")
+
+class RegionalCrop(Base):
+    __tablename__ = "regional_crops"
+    id = Column(Integer, primary_key=True, index=True)
+    region_id = Column(Integer, ForeignKey("regions.id"))
+    rcrop_id = Column(String(100), nullable=True) # External or code ID
+    crop_name = Column(String(255), nullable=False)
+    family_id = Column(Integer, ForeignKey("crop_families.id"))
+    picture = Column(String(500), nullable=True)
+    
+    region = relationship("Region")
+    family = relationship("CropFamily")
+
+class Camp(Base):
+    __tablename__ = "camps"
+    id = Column(Integer, primary_key=True, index=True)
+    region_id = Column(Integer, ForeignKey("regions.id"))
+    province_id = Column(Integer, ForeignKey("provinces.id"))
+    district_id = Column(Integer, ForeignKey("districts.id"))
+    name = Column(String(255), nullable=False)
+    camp_type = Column(String(100), nullable=True)
+    total_customers = Column(Integer, default=0)
+    
+    region = relationship("Region")
+    province = relationship("Province")
+    district = relationship("District")
 
 class NotificationTemplate(Base):
     __tablename__ = "notification_templates"

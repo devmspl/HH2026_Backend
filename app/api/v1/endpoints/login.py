@@ -5,7 +5,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-from app import models, schemas
+from app import models
+from app.schemas import user as user_schema
 from app.core import security
 from app.core.config import settings
 from app.core.auth import get_current_user
@@ -65,14 +66,14 @@ def login_access_token(
         "avatar_url": str(user.avatar_url) if user.avatar_url else None
     }
 
-@router.post("/login/test-token", response_model=Any)
+@router.post("/login/test-token", response_model=user_schema.User)
 def test_token(current_user: User = Depends(get_current_user)) -> Any:
     """
     Test access token
     """
     return current_user
 
-@router.get("/users/me", response_model=Any)
+@router.get("/users/me", response_model=user_schema.User)
 def read_user_me(
     current_user: User = Depends(get_current_user),
 ) -> Any:
