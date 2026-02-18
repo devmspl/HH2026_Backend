@@ -33,6 +33,8 @@ class ReportCreate(ReportBase):
     survey_responses: Optional[dict] = None # For SMS notification
     media: Optional[List[dict]] = None # List of {url, type, name}
     status: Optional[str] = "pending"
+    province_id: Optional[int] = None  # For Crop Domination Map (By Province)
+    region_id: Optional[int] = None    # For Crop Domination Map (By Region)
 
 class ReportUpdate(BaseModel):
     title: Optional[str] = None
@@ -75,7 +77,11 @@ class Report(ReportBase):
     edits: List[ReportEditHistory] = []
     survey_id: Optional[int] = None
     survey_name: Optional[str] = None
-    
+    province_id: Optional[int] = None
+    district_id: Optional[int] = None
+    region_id: Optional[int] = None
+    camp_id: Optional[int] = None
+
     class Config:
         from_attributes = True
 
@@ -127,3 +133,62 @@ class MediaItem(BaseModel):
     created_at: Optional[datetime] = None
     class Config:
         from_attributes = True
+
+
+class NationalCropRow(BaseModel):
+    """
+    One row for the National crops table.
+    """
+    crop_name: str
+    family_name: str
+    yield_tonnes: float
+    active_customers: Optional[int] = None
+    participating_customers: Optional[int] = None
+    percent_participation: Optional[float] = None
+    percent_active: Optional[float] = None
+
+
+class NationalCropFamilyPie(BaseModel):
+    """
+    Aggregated data by crop family for pie / bar charts.
+    """
+    family_name: str
+    total_yield_tonnes: float
+    total_spoiled_responses: int
+    active_customers: Optional[int] = None
+    participating_customers: Optional[int] = None
+    percent_participation: Optional[float] = None
+    percent_active: Optional[float] = None
+
+
+class NationalCropReport(BaseModel):
+    """
+    National-level crop report used by dashboard tables and charts.
+    """
+    total_farmers: int
+    participating_farmers: int
+    spoiled_responses: int
+    rows: List[NationalCropRow]
+    families: List[NationalCropFamilyPie]
+
+
+class RegionalCropTallyRow(BaseModel):
+    """One row for Regional crops tally table."""
+    regional_crop_name: str
+    family_name: str
+    region_name: Optional[str] = None
+    district_name: Optional[str] = None
+    province_name: Optional[str] = None
+    yield_tonnes: float
+    active_customers: Optional[int] = None
+    participating_customers: Optional[int] = None
+    percent_participation: Optional[float] = None
+    percent_active: Optional[float] = None
+
+
+class RegionalCropTallyReport(BaseModel):
+    """Regional crops tally report (by region)."""
+    total_farmers: int
+    participating_farmers: int
+    spoiled_responses: int
+    rows: List[RegionalCropTallyRow]

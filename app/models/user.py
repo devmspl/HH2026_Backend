@@ -57,6 +57,18 @@ class User(Base):
     last_seen = Column(DateTime(timezone=True), nullable=True)
     location = Column(String(255), nullable=True) # Assigned area or address
 
+    # Location hierarchy (for Agent, Camp, Region, District, Provincial users)
+    camp_id = Column(Integer, ForeignKey("camps.id"), nullable=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
+    province_id = Column(Integer, ForeignKey("provinces.id"), nullable=True)
+    district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+
+    # Agent profile fields (when role = AGENT)
+    age = Column(Integer, nullable=True)
+    sex = Column(String(20), nullable=True)
+    profession = Column(String(255), nullable=True)
+    nrc = Column(String(50), nullable=True)  # National ID / NRC
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -91,6 +103,12 @@ class Report(Base):
     
     # Store dynamic survey results as JSON string
     survey_data = Column(Text, nullable=True)
+
+    # Location at time of report (from agent's assigned location)
+    province_id = Column(Integer, ForeignKey("provinces.id"), nullable=True)
+    district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
+    camp_id = Column(Integer, ForeignKey("camps.id"), nullable=True)
 
     agent = relationship("User", back_populates="reports")
     survey = relationship("Survey", backref="reports")
@@ -139,13 +157,18 @@ class Survey(Base):
     __tablename__ = "surveys"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False) # Survey Title
-    form_type = Column(Enum(SurveyType), default=SurveyType.NATIONAL) # Survey Type
+    # Store form_type as plain string for compatibility with existing data
+    # Values are expected to be like "National Crops Survey" / "Regional Crops Survey"
+    form_type = Column(String(255), nullable=False, default=SurveyType.NATIONAL.value) # Survey Type
     description = Column(Text, nullable=True) # Survey Description / Objective
-    target_respondents = Column(Enum(TargetRespondents), default=TargetRespondents.ALL) # Target Respondents
+    # Store target_respondents as plain string (e.g. "All Agents", "Selected Agents")
+    target_respondents = Column(String(100), nullable=False, default=TargetRespondents.ALL.value)
     instructions = Column(Text, nullable=True) # Instructions for Agents
     allow_edit = Column(Boolean, default=False) # Allow Edit After Submission?
-    attachment_required = Column(Enum(AttachmentRequirement), default=AttachmentRequirement.OPTIONAL) # Attachment Required?
-    status = Column(Enum(SurveyStatus), default=SurveyStatus.DRAFT)
+    # Store attachment_required as plain string ("Yes", "Optional", "No")
+    attachment_required = Column(String(50), nullable=False, default=AttachmentRequirement.OPTIONAL.value)
+    # Store status as plain string ("draft", "active", "ended")
+    status = Column(String(50), nullable=False, default=SurveyStatus.DRAFT.value)
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
@@ -291,6 +314,21 @@ class Customer(Base):
     cnic = Column(String(20), unique=True, index=True, nullable=True)
     category = Column(String(100), nullable=True) # e.g. Priority, Regular, Area-specific
     survey_data = Column(String, nullable=True) # JSON or serialized data
+
+    # Location hierarchy
+    farmer_id = Column(String(50), nullable=True)  # FarmerID
+    camp_id = Column(Integer, ForeignKey("camps.id"), nullable=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
+    district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+    province_id = Column(Integer, ForeignKey("provinces.id"), nullable=True)
+    membership_status = Column(String(50), nullable=True)
+    agent_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    assigned_camp_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Camp user who owns this customer (max 100 per Camp user)
+    household = Column(String(255), nullable=True)  # HouseHold
+    education_level = Column(String(100), nullable=True)
+    emp_status = Column(String(100), nullable=True)  # Employment status
+    photo = Column(String(500), nullable=True)  # Photo URL
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

@@ -1,9 +1,9 @@
 from typing import Any, List
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.orm import Session
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, RoleChecker
 from app.db.session import get_db
-from app.models.user import User, Survey, SurveyStatus, SurveyType
+from app.models.user import User, Survey, SurveyStatus, SurveyType, UserRole
 from app.schemas.user import SurveyOut, SurveyCreate, SurveyUpdate
 import csv
 import io
@@ -37,8 +37,7 @@ def get_surveys(
     # Map target_user_ids for each survey
     results = []
     for s in surveys:
-        out = SurveyOut.from_orm(s)
-        out.target_user_ids = [u.id for u in s.target_users]
+        out = SurveyOut.model_validate(s).model_copy(update={"target_user_ids": [u.id for u in s.target_users]})
         results.append(out)
     return results
 
@@ -55,49 +54,62 @@ def get_survey(
     if not survey:
         raise HTTPException(status_code=404, detail="Survey not found")
     
-    out = SurveyOut.from_orm(survey)
-    out.target_user_ids = [u.id for u in survey.target_users]
+    out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
     return out
 
 @router.post("/", response_model=SurveyOut)
 def create_survey(
     survey_in: SurveyCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
 ):
     """
     Create a new survey in DRAFT status.
+
+    Business rule:
+    - Only System Super Admin can create national/regional surveys.
     """
-    survey_data = survey_in.dict(exclude={"target_user_ids"})
-    survey = Survey(
-        **survey_data,
-        created_by=current_user.id
-    )
-    
-    if survey_in.target_user_ids:
-        target_users = db.query(User).filter(User.id.in_(survey_in.target_user_ids)).all()
-        survey.target_users = target_users
+    try:
+        survey_data = survey_in.model_dump(exclude={"target_user_ids"})
+        # Normalize Enum-like values to string for DB
+        for key in ("form_type", "target_respondents", "attachment_required", "status"):
+            if key in survey_data and hasattr(survey_data[key], "value"):
+                survey_data[key] = survey_data[key].value
+
+        survey = Survey(
+            **survey_data,
+            created_by=current_user.id
+        )
         
-    db.add(survey)
-    db.commit()
-    db.refresh(survey)
-    
-    # Map target_user_ids for response
-    survey_out = SurveyOut.from_orm(survey)
-    survey_out.target_user_ids = [u.id for u in survey.target_users]
-    
-    log_action(db, current_user.id, "CREATE_SURVEY", f"Created {survey.form_type.value} '{survey.name}'")
-    
-    return survey_out
+        if survey_in.target_user_ids:
+            target_users = db.query(User).filter(User.id.in_(survey_in.target_user_ids)).all()
+            survey.target_users = target_users
+            
+        db.add(survey)
+        db.commit()
+        db.refresh(survey)
+        
+        survey_out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
+        log_action(db, current_user.id, "CREATE_SURVEY", f"Created {survey.form_type} '{survey.name}'")
+        return survey_out
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Survey create failed: {str(e)}",
+        )
 
 @router.put("/{survey_id}/launch", response_model=SurveyOut)
 def launch_survey(
     survey_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
 ):
     """
     Launch a survey (set status to ACTIVE).
+
+    Business rule:
+    - Only System Super Admin can launch surveys.
     """
     survey = db.query(Survey).filter(Survey.id == survey_id).first()
     if not survey:
@@ -111,17 +123,19 @@ def launch_survey(
     db.refresh(survey)
     
     log_action(db, current_user.id, "LAUNCH_SURVEY", f"Launched survey '{survey.name}' (ID: {survey_id})")
-    
-    return survey
+    return SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
 
 @router.put("/{survey_id}/end", response_model=SurveyOut)
 def end_survey(
     survey_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
 ):
     """
     End a survey (set status to ENDED).
+
+    Business rule:
+    - Only System Super Admin can end surveys.
     """
     survey = db.query(Survey).filter(Survey.id == survey_id).first()
     if not survey:
@@ -132,18 +146,20 @@ def end_survey(
     db.refresh(survey)
     
     log_action(db, current_user.id, "END_SURVEY", f"Ended survey '{survey.name}' (ID: {survey_id})")
-    
-    return survey
+    return SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
 
 @router.put("/{survey_id}/status", response_model=SurveyOut)
 def update_survey_status(
     survey_id: int,
     status: SurveyStatus,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
 ):
     """
     Update survey status (generic endpoint).
+
+    Business rule:
+    - Only System Super Admin can change survey lifecycle state.
     """
     survey = db.query(Survey).filter(Survey.id == survey_id).first()
     if not survey:
@@ -155,24 +171,26 @@ def update_survey_status(
     db.refresh(survey)
     
     log_action(db, current_user.id, "UPDATE_SURVEY_STATUS", f"Updated status of survey '{survey.name}' from {old_status} to {status}")
-    
-    return survey
+    return SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
 
 @router.put("/{survey_id}", response_model=SurveyOut)
 def update_survey(
     survey_id: int,
     survey_in: SurveyUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
 ):
     """
     Update a survey.
+
+    Business rule:
+    - Only System Super Admin can edit surveys.
     """
     survey = db.query(Survey).filter(Survey.id == survey_id).first()
     if not survey:
         raise HTTPException(status_code=404, detail="Survey not found")
     
-    update_data = survey_in.dict(exclude_unset=True, exclude={"target_user_ids"})
+    update_data = survey_in.model_dump(exclude_unset=True, exclude={"target_user_ids"})
     for field, value in update_data.items():
         setattr(survey, field, value)
     
@@ -183,22 +201,21 @@ def update_survey(
     db.commit()
     db.refresh(survey)
     
-    # Map target_user_ids for response
-    survey_out = SurveyOut.from_orm(survey)
-    survey_out.target_user_ids = [u.id for u in survey.target_users]
-    
+    survey_out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
     log_action(db, current_user.id, "UPDATE_SURVEY", f"Updated survey '{survey.name}' (ID: {survey_id})")
-    
     return survey_out
 
 @router.delete("/{survey_id}")
 def delete_survey(
     survey_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
 ):
     """
     Delete a survey.
+
+    Business rule:
+    - Only System Super Admin can delete surveys.
     """
     survey = db.query(Survey).filter(Survey.id == survey_id).first()
     if not survey:

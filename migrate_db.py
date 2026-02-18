@@ -20,6 +20,16 @@ def migrate():
         db.execute(text("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS allow_edit BOOLEAN DEFAULT FALSE"))
         db.execute(text("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS attachment_required VARCHAR(50) DEFAULT 'Optional'"))
         db.execute(text("ALTER TABLE reports ADD COLUMN IF NOT EXISTS survey_id INTEGER"))
+        db.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS assigned_camp_user_id INTEGER"))
+        # If surveys.status is a PostgreSQL ENUM, convert to VARCHAR so we can store 'draft'/'active'/'ended'
+        try:
+            db.execute(text("ALTER TABLE surveys ALTER COLUMN status TYPE VARCHAR(50) USING lower(status::text)"))
+            print("Converted surveys.status from enum to VARCHAR(50).")
+        except Exception as e:
+            if "type of column" in str(e).lower() or "already" in str(e).lower():
+                pass  # already varchar or no enum
+            else:
+                print(f"Note: surveys.status conversion skipped: {e}")
         db.commit()
         print("Migration successful: all tables and columns verified.")
     except Exception as e:

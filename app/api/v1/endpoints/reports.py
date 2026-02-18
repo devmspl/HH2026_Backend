@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Dict, Tuple
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
@@ -11,6 +11,77 @@ import uuid
 import json
 
 router = APIRouter()
+
+
+def _aggregate_national_crop_reports(reports: List[Report]) -> Tuple[int, int, int, List[general_schema.NationalCropRow], List[general_schema.NationalCropFamilyPie]]:
+    """Aggregate report survey_data (national format) into rows and families. Reused for national/provincial/district/region."""
+    total_farmers = 0
+    participating_farmers = 0
+    spoiled_responses = 0
+    crop_agg: Dict[Tuple[str, str], Dict[str, float]] = {}
+
+    for report in reports:
+        if not report.survey_data:
+            continue
+        try:
+            data = json.loads(report.survey_data)
+        except Exception:
+            continue
+        total_farmers += int(data.get("total_farmers", 0) or 0)
+        participating_farmers += int(data.get("participating_farmers", 0) or 0)
+        spoiled_responses += int(data.get("spoiled_responses", 0) or 0)
+        for crop in data.get("crops", []):
+            crop_name = str(crop.get("crop_name") or "").strip()
+            family_name = str(crop.get("family_name") or "").strip()
+            if not crop_name or not family_name:
+                continue
+            yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            key = (crop_name, family_name)
+            if key not in crop_agg:
+                crop_agg[key] = {"yield_tonnes": 0.0}
+            crop_agg[key]["yield_tonnes"] += yield_tonnes
+
+    active_customers_total = total_farmers
+    participating_customers_total = participating_farmers
+    rows: List[general_schema.NationalCropRow] = []
+    families_map: Dict[str, Dict[str, float]] = {}
+
+    for (crop_name, family_name), metrics in crop_agg.items():
+        yield_tonnes = metrics["yield_tonnes"]
+        percent_participation = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+        percent_active = (active_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+        rows.append(
+            general_schema.NationalCropRow(
+                crop_name=crop_name,
+                family_name=family_name,
+                yield_tonnes=yield_tonnes,
+                active_customers=active_customers_total if active_customers_total > 0 else None,
+                participating_customers=participating_customers_total if participating_customers_total > 0 else None,
+                percent_participation=percent_participation,
+                percent_active=percent_active,
+            )
+        )
+        fam = families_map.setdefault(family_name, {"total_yield_tonnes": 0.0, "total_spoiled_responses": 0.0})
+        fam["total_yield_tonnes"] += yield_tonnes
+        fam["total_spoiled_responses"] += spoiled_responses
+
+    families: List[general_schema.NationalCropFamilyPie] = []
+    for family_name, metrics in families_map.items():
+        percent_participation = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+        percent_active = (active_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+        families.append(
+            general_schema.NationalCropFamilyPie(
+                family_name=family_name,
+                total_yield_tonnes=metrics["total_yield_tonnes"],
+                total_spoiled_responses=int(metrics["total_spoiled_responses"]),
+                active_customers=active_customers_total if active_customers_total > 0 else None,
+                participating_customers=participating_customers_total if participating_customers_total > 0 else None,
+                percent_participation=percent_participation,
+                percent_active=percent_active,
+            )
+        )
+    return total_farmers, participating_farmers, spoiled_responses, rows, families
+
 
 @router.get("/", response_model=List[general_schema.Report])
 def read_reports(
@@ -79,6 +150,363 @@ def read_reports(
 
     return reports
 
+
+@router.get("/crops/national", response_model=general_schema.NationalCropReport)
+def get_national_crop_report(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Aggregate National crop survey data for dashboard tables and charts.
+
+    Expected survey_data format (per Report for NATIONAL surveys):
+    {
+      "total_farmers": 250,
+      "participating_farmers": 200,
+      "spoiled_responses": 5,
+      "crops": [
+        {
+          "crop_name": "Maize",
+          "family_name": "Cereals",
+          "yield_tonnes": 10.5
+        },
+        ...
+      ]
+    }
+    """
+    from app.models.user import Survey
+
+    # Fetch all reports that have survey_data: National + Regional surveys (so admin-created sample reports show in National tab too)
+    query = (
+        db.query(Report)
+        .join(Survey, Report.survey_id == Survey.id)
+        .filter(
+            (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey")
+        )
+    )
+    reports = query.all()
+    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports)
+    return general_schema.NationalCropReport(
+        total_farmers=total_farmers,
+        participating_farmers=participating_farmers,
+        spoiled_responses=spoiled_responses,
+        rows=rows,
+        families=families,
+    )
+
+
+@router.get("/crops/provincial", response_model=general_schema.NationalCropReport)
+def get_provincial_crop_report(
+    province_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Crop report filtered by Province. Same format as national (Crops | Family | Yield | ACustomers | PCustomers | %)."""
+    from app.models.user import Survey
+    query = (
+        db.query(Report)
+        .join(Survey, Report.survey_id == Survey.id)
+        .filter(Survey.form_type == "National Crops Survey", Report.province_id == province_id)
+    )
+    reports = query.all()
+    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports)
+    return general_schema.NationalCropReport(
+        total_farmers=total_farmers,
+        participating_farmers=participating_farmers,
+        spoiled_responses=spoiled_responses,
+        rows=rows,
+        families=families,
+    )
+
+
+@router.get("/crops/district", response_model=general_schema.NationalCropReport)
+def get_district_crop_report(
+    district_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Crop report filtered by District."""
+    from app.models.user import Survey
+    query = (
+        db.query(Report)
+        .join(Survey, Report.survey_id == Survey.id)
+        .filter(Survey.form_type == "National Crops Survey", Report.district_id == district_id)
+    )
+    reports = query.all()
+    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports)
+    return general_schema.NationalCropReport(
+        total_farmers=total_farmers,
+        participating_farmers=participating_farmers,
+        spoiled_responses=spoiled_responses,
+        rows=rows,
+        families=families,
+    )
+
+
+@router.get("/crops/region", response_model=general_schema.NationalCropReport)
+def get_region_crop_report(
+    region_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Crop report filtered by Region."""
+    from app.models.user import Survey
+    query = (
+        db.query(Report)
+        .join(Survey, Report.survey_id == Survey.id)
+        .filter(Survey.form_type == "National Crops Survey", Report.region_id == region_id)
+    )
+    reports = query.all()
+    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports)
+    return general_schema.NationalCropReport(
+        total_farmers=total_farmers,
+        participating_farmers=participating_farmers,
+        spoiled_responses=spoiled_responses,
+        rows=rows,
+        families=families,
+    )
+
+
+@router.get("/crops/regional", response_model=general_schema.RegionalCropTallyReport)
+def get_regional_crops_tally(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    region_id: Optional[int] = None,
+) -> Any:
+    """
+    Regional crops tally: RegionalCropName | Family | RegionName | District | Province | Yield | ACustomers | %.
+    Uses reports from Regional Crops Survey; optional filter by region_id.
+    """
+    from app.models.user import Survey, Region, District, Province
+    query = (
+        db.query(Report)
+        .join(Survey, Report.survey_id == Survey.id)
+        .filter(Survey.form_type == "Regional Crops Survey")
+    )
+    if region_id is not None:
+        query = query.filter(Report.region_id == region_id)
+    reports = query.all()
+
+    total_farmers = 0
+    participating_farmers = 0
+    spoiled_responses = 0
+    # Key: (region_id, crop_name, family_name) -> yield + location names
+    agg: Dict[Tuple[Optional[int], str, str], Dict[str, Any]] = {}
+
+    for report in reports:
+        if not report.survey_data:
+            continue
+        try:
+            data = json.loads(report.survey_data)
+        except Exception:
+            continue
+        total_farmers += int(data.get("total_farmers", 0) or 0)
+        participating_farmers += int(data.get("participating_farmers", 0) or 0)
+        spoiled_responses += int(data.get("spoiled_responses", 0) or 0)
+
+        region_name = None
+        district_name = None
+        province_name = None
+        if report.region_id:
+            r = db.query(Region).filter(Region.id == report.region_id).first()
+            if r:
+                region_name = r.name
+                if r.district_id:
+                    d = db.query(District).filter(District.id == r.district_id).first()
+                    if d:
+                        district_name = d.name
+                if r.province_id:
+                    p = db.query(Province).filter(Province.id == r.province_id).first()
+                    if p:
+                        province_name = p.name
+
+        for crop in data.get("crops", []):
+            crop_name = str(crop.get("crop_name") or "").strip()
+            family_name = str(crop.get("family_name") or "").strip()
+            if not crop_name or not family_name:
+                continue
+            yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            key = (report.region_id, crop_name, family_name)
+            if key not in agg:
+                agg[key] = {
+                    "yield_tonnes": 0.0,
+                    "region_name": region_name,
+                    "district_name": district_name,
+                    "province_name": province_name,
+                }
+            agg[key]["yield_tonnes"] += yield_tonnes
+
+    active_customers_total = total_farmers
+    participating_customers_total = participating_farmers
+    percent_participation = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+    percent_active = (active_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+
+    rows: List[general_schema.RegionalCropTallyRow] = []
+    for (rid, crop_name, family_name), metrics in agg.items():
+        rows.append(
+            general_schema.RegionalCropTallyRow(
+                regional_crop_name=crop_name,
+                family_name=family_name,
+                region_name=metrics.get("region_name"),
+                district_name=metrics.get("district_name"),
+                province_name=metrics.get("province_name"),
+                yield_tonnes=metrics["yield_tonnes"],
+                active_customers=active_customers_total if active_customers_total > 0 else None,
+                participating_customers=participating_customers_total if participating_customers_total > 0 else None,
+                percent_participation=percent_participation,
+                percent_active=percent_active,
+            )
+        )
+
+    return general_schema.RegionalCropTallyReport(
+        total_farmers=total_farmers,
+        participating_farmers=participating_farmers,
+        spoiled_responses=spoiled_responses,
+        rows=rows,
+    )
+
+
+@router.get("/crops/dominant-map")
+def get_dominant_crop_map(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    For maps: dominant crop family per Province and per Region.
+    Returns by_province: [{ province_id, province_name, dominant_family_name }],
+    by_region: [{ region_id, region_name, district_name, province_name, dominant_family_name }].
+    """
+    from app.models.user import Survey, Province, District, Region
+    from collections import defaultdict
+
+    # Reports with location + survey_data (National + Regional surveys) for By Province / By Region map
+    query = (
+        db.query(Report)
+        .join(Survey, Report.survey_id == Survey.id)
+        .filter(
+            (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey")
+        )
+    )
+    reports = query.all()
+
+    province_family_yield: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    region_family_yield: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for report in reports:
+        if not report.survey_data:
+            continue
+        try:
+            data = json.loads(report.survey_data)
+        except Exception:
+            continue
+        for crop in data.get("crops", []):
+            family_name = str(crop.get("family_name") or "").strip()
+            if not family_name:
+                continue
+            yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            if report.province_id:
+                province_family_yield[report.province_id][family_name] += yield_tonnes
+            if report.region_id:
+                region_family_yield[report.region_id][family_name] += yield_tonnes
+
+    by_province: List[Dict[str, Any]] = []
+    for pid, family_yields in province_family_yield.items():
+        if not family_yields:
+            continue
+        dominant = max(family_yields.items(), key=lambda x: x[1])
+        prov = db.query(Province).filter(Province.id == pid).first()
+        by_province.append({
+            "province_id": pid,
+            "province_name": prov.name if prov else f"Province {pid}",
+            "dominant_family_name": dominant[0],
+            "yield_tonnes": round(dominant[1], 2),
+        })
+    by_province.sort(key=lambda x: x["province_name"])
+
+    by_region: List[Dict[str, Any]] = []
+    for rid, family_yields in region_family_yield.items():
+        if not family_yields:
+            continue
+        dominant = max(family_yields.items(), key=lambda x: x[1])
+        reg = db.query(Region).filter(Region.id == rid).first()
+        district_name = None
+        province_name = None
+        if reg:
+            if reg.district_id:
+                d = db.query(District).filter(District.id == reg.district_id).first()
+                if d:
+                    district_name = d.name
+            if reg.province_id:
+                p = db.query(Province).filter(Province.id == reg.province_id).first()
+                if p:
+                    province_name = p.name
+        by_region.append({
+            "region_id": rid,
+            "region_name": reg.name if reg else f"Region {rid}",
+            "district_name": district_name,
+            "province_name": province_name,
+            "dominant_family_name": dominant[0],
+            "yield_tonnes": round(dominant[1], 2),
+        })
+    by_region.sort(key=lambda x: (x.get("province_name") or "", x.get("region_name") or ""))
+
+    return {"by_province": by_province, "by_region": by_region}
+
+
+@router.get("/crops/top-family-by-province")
+def get_top_family_by_province(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Regional crop graph: Family | number of provinces where it is top rank | Province names.
+    Returns list of { family_name, province_count, provinces: [names] }.
+    """
+    from app.models.user import Survey, Province
+    from collections import defaultdict
+
+    query = (
+        db.query(Report)
+        .join(Survey, Report.survey_id == Survey.id)
+        .filter(Survey.form_type == "National Crops Survey")
+    )
+    reports = query.all()
+    province_family_yield: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for report in reports:
+        if not report.survey_data or not report.province_id:
+            continue
+        try:
+            data = json.loads(report.survey_data)
+        except Exception:
+            continue
+        for crop in data.get("crops", []):
+            family_name = str(crop.get("family_name") or "").strip()
+            if not family_name:
+                continue
+            yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            province_family_yield[report.province_id][family_name] += yield_tonnes
+
+    # For each province, find dominant family
+    province_dominant: Dict[int, str] = {}
+    for pid, family_yields in province_family_yield.items():
+        if family_yields:
+            province_dominant[pid] = max(family_yields.items(), key=lambda x: x[1])[0]
+
+    # Invert: family_name -> list of provinces where it is dominant
+    family_provinces: Dict[str, List[str]] = defaultdict(list)
+    for pid, family_name in province_dominant.items():
+        prov = db.query(Province).filter(Province.id == pid).first()
+        name = prov.name if prov else f"Province {pid}"
+        family_provinces[family_name].append(name)
+
+    rows = [
+        {"family_name": fam, "province_count": len(provinces), "provinces": sorted(provinces)}
+        for fam, provinces in sorted(family_provinces.items(), key=lambda x: -len(x[1]))
+    ]
+    return {"rows": rows}
+
+
 @router.post("/", response_model=general_schema.Report)
 def create_report(
     *,
@@ -87,9 +515,20 @@ def create_report(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """
-    Create new report.
+    Create new report (survey submission).
+
+    Business rules:
+    - Agents can submit reports only for themselves.
+    - Admin/Super Admin can create reports on behalf of any agent (for testing or data entry).
+    - If survey targets selected agents, the assigned agent must be in that list.
     """
     from app.models.user import Survey, TargetRespondents
+    # Only AGENT role can submit; Admin/Super Admin can create on behalf of any agent
+    if current_user.role not in (UserRole.AGENT, UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only agents or admins can create reports",
+        )
     survey = db.query(Survey).filter(Survey.id == report_in.survey_id).first()
     if not survey:
         raise HTTPException(status_code=404, detail="Survey not found")
@@ -97,25 +536,41 @@ def create_report(
     if survey.status != "active":
         raise HTTPException(status_code=400, detail="Cannot submit reports for a non-active survey")
 
-    # Security Check: Ensure user is assigned to this survey if it's TargetRespondents.SELECTED
-    if current_user.role == UserRole.AGENT:
-        # Agents can only submit for themselves
-        if report_in.agent_id != current_user.id:
-             raise HTTPException(status_code=403, detail="Agents can only submit reports for themselves")
-        
-        # Check survey assignment
-        if survey.target_respondents == TargetRespondents.SELECTED:
-            assigned_user_ids = [u.id for u in survey.target_users]
-            if current_user.id not in assigned_user_ids:
-                 raise HTTPException(status_code=403, detail="You are not assigned to this survey")
-    else:
-        # Admins can submit for any agent, check if the *assigned agent* (report_in.agent_id) is allowed for this survey?
-        # Maybe optional for admins, but let's enforce consistency: The REPORT agent must be valid for the survey.
-        if survey.target_respondents == TargetRespondents.SELECTED:
-            assigned_user_ids = [u.id for u in survey.target_users]
-            if report_in.agent_id not in assigned_user_ids:
-                 # Warning or Error? Let's make it an error to prevent data inconsistency
-                 raise HTTPException(status_code=400, detail="The selected agent is not assigned to this survey")
+    # Agents can only submit for themselves; Admin/Super Admin can set any agent_id
+    if current_user.role == UserRole.AGENT and report_in.agent_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agents can only submit reports for themselves",
+        )
+
+    # Check survey assignment if TargetRespondents.SELECTED (check the report's agent, not necessarily current_user)
+    report_agent_id = report_in.agent_id
+    if survey.target_respondents == TargetRespondents.SELECTED.value:
+        assigned_user_ids = [u.id for u in survey.target_users]
+        if report_agent_id not in assigned_user_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Selected agent is not assigned to this survey",
+            )
+
+    # Set report location: from request (admin), else from agent (for Crop Domination Map)
+    province_id = getattr(report_in, "province_id", None)
+    region_id = getattr(report_in, "region_id", None)
+    district_id = None
+    camp_id = None
+    if province_id is None and region_id is None:
+        if current_user.role == UserRole.AGENT and current_user.id == report_agent_id:
+            province_id = getattr(current_user, "province_id", None)
+            district_id = getattr(current_user, "district_id", None)
+            region_id = getattr(current_user, "region_id", None)
+            camp_id = getattr(current_user, "camp_id", None)
+        else:
+            agent_user = db.query(User).filter(User.id == report_agent_id).first()
+            if agent_user:
+                province_id = getattr(agent_user, "province_id", None)
+                district_id = getattr(agent_user, "district_id", None)
+                region_id = getattr(agent_user, "region_id", None)
+                camp_id = getattr(agent_user, "camp_id", None)
 
     db_obj = Report(
         agent_id=report_in.agent_id,
@@ -126,7 +581,11 @@ def create_report(
         gps_lng=report_in.gps_lng,
         confirmation_no=f"CONF-{uuid.uuid4().hex[:8].upper()}",
         status=report_in.status or "pending",
-        survey_data=json.dumps(report_in.survey_responses) if report_in.survey_responses else None
+        survey_data=json.dumps(report_in.survey_responses) if report_in.survey_responses else None,
+        province_id=province_id,
+        district_id=district_id,
+        region_id=region_id,
+        camp_id=camp_id,
     )
     db.add(db_obj)
     db.commit()

@@ -1,11 +1,11 @@
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, ConfigDict
-from app.models.user import UserRole, SurveyStatus, SurveyType, TargetRespondents, AttachmentRequirement
+from app.models.user import UserRole
 from datetime import datetime
 
-# Shared properties
+# Shared properties (email as str on output so any DB value e.g. *@seed.local is accepted)
 class UserBase(BaseModel):
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     is_active: Optional[bool] = True
     full_name: Optional[str] = None
     role: Optional[UserRole] = UserRole.AGENT
@@ -16,9 +16,9 @@ class UserBase(BaseModel):
     parent_id: Optional[int] = None
     avatar_url: Optional[str] = None
 
-# Properties to receive via API on creation
+# Properties to receive via API on creation (strict email on input)
 class UserCreate(UserBase):
-    email: EmailStr
+    email: EmailStr  # validated on create/register
     password: str
 
 # Properties to receive via API on update
@@ -47,26 +47,31 @@ class UserInDB(UserInDBBase):
 class SurveyBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     name: str # Survey Title
-    form_type: SurveyType = SurveyType.NATIONAL # Survey Type
+    # Store as plain string for compatibility with existing DB/frontend values
+    # e.g. "National Crops Survey" / "Regional Crops Survey"
+    form_type: str = "National Crops Survey"
     description: Optional[str] = None # Survey Description / Objective
-    target_respondents: TargetRespondents = TargetRespondents.ALL # Target Respondents
+    # "All Agents" or "Selected Agents"
+    target_respondents: str = "All Agents"
     instructions: Optional[str] = None # Instructions for Agents
     allow_edit: bool = False # Allow Edit After Submission?
-    attachment_required: AttachmentRequirement = AttachmentRequirement.OPTIONAL # Attachment Required?
-    status: SurveyStatus = SurveyStatus.DRAFT
+    # "Yes", "Optional", "No"
+    attachment_required: str = "Optional"
+    # "draft", "active", "ended"
+    status: str = "draft"
 
 class SurveyCreate(SurveyBase):
     target_user_ids: List[int] = []
 
 class SurveyUpdate(BaseModel):
     name: Optional[str] = None
-    form_type: Optional[SurveyType] = None
+    form_type: Optional[str] = None
     description: Optional[str] = None
-    target_respondents: Optional[TargetRespondents] = None
+    target_respondents: Optional[str] = None
     instructions: Optional[str] = None
     allow_edit: Optional[bool] = None
-    attachment_required: Optional[AttachmentRequirement] = None
-    status: Optional[SurveyStatus] = None
+    attachment_required: Optional[str] = None
+    status: Optional[str] = None
     target_user_ids: Optional[List[int]] = None
 
 class SurveyOut(SurveyBase):

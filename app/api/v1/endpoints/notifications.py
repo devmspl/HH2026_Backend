@@ -2,9 +2,9 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import Text
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, RoleChecker
 from app.db.session import get_db
-from app.models.user import User, NotificationTemplate, NotificationLog, SystemConfiguration
+from app.models.user import User, NotificationTemplate, NotificationLog, SystemConfiguration, UserRole
 from pydantic import BaseModel
 import json
 
@@ -115,7 +115,11 @@ def get_config(key: str, db: Session = Depends(get_db)):
     return {"key": key, "value": json.loads(config.value)}
 
 @router.post("/config")
-def save_config(payload: ConfigSave, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def save_config(
+    payload: ConfigSave,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR])),
+):
     config = db.query(SystemConfiguration).filter(SystemConfiguration.key == payload.key).first()
     if config:
         config.value = json.dumps(payload.value)
