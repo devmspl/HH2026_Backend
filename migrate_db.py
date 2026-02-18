@@ -10,8 +10,17 @@ def migrate():
     
     db = SessionLocal()
     try:
-        # Add columns to existing tables if they don't exist
+        # --- users: all columns the User model expects ---
         db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS location VARCHAR(255)"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS camp_id INTEGER"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS region_id INTEGER"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS province_id INTEGER"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS district_id INTEGER"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS age INTEGER"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS sex VARCHAR(20)"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS profession VARCHAR(255)"))
+        db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS nrc VARCHAR(50)"))
+        # --- surveys ---
         db.execute(text("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS form_type VARCHAR(255) DEFAULT 'National Crops Survey'"))
         db.execute(text("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'draft'"))
         db.execute(text("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS description TEXT"))
@@ -19,8 +28,20 @@ def migrate():
         db.execute(text("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS instructions TEXT"))
         db.execute(text("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS allow_edit BOOLEAN DEFAULT FALSE"))
         db.execute(text("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS attachment_required VARCHAR(50) DEFAULT 'Optional'"))
+        # --- reports ---
         db.execute(text("ALTER TABLE reports ADD COLUMN IF NOT EXISTS survey_id INTEGER"))
+        db.execute(text("ALTER TABLE reports ADD COLUMN IF NOT EXISTS province_id INTEGER"))
+        db.execute(text("ALTER TABLE reports ADD COLUMN IF NOT EXISTS district_id INTEGER"))
+        db.execute(text("ALTER TABLE reports ADD COLUMN IF NOT EXISTS region_id INTEGER"))
+        db.execute(text("ALTER TABLE reports ADD COLUMN IF NOT EXISTS camp_id INTEGER"))
+        # --- customers ---
         db.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS assigned_camp_user_id INTEGER"))
+        db.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS farmer_id VARCHAR(50)"))
+        db.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS membership_status VARCHAR(50)"))
+        db.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS household VARCHAR(255)"))
+        db.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS education_level VARCHAR(100)"))
+        db.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS emp_status VARCHAR(100)"))
+        db.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS photo VARCHAR(500)"))
         # If surveys.status is a PostgreSQL ENUM, convert to VARCHAR so we can store 'draft'/'active'/'ended'
         try:
             db.execute(text("ALTER TABLE surveys ALTER COLUMN status TYPE VARCHAR(50) USING lower(status::text)"))
