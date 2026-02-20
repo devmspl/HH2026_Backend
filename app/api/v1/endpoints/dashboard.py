@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.core.auth import get_current_user
 from app.db.session import get_db
-from app.models.user import User, UserRole, Report, NotificationLog, AuditLog, ReportMedia
+from app.models.user import User, UserRole, Report, NotificationLog, AuditLog, ReportMedia, SystemConfiguration
 from app.schemas import general as general_schema
+import json
 
 router = APIRouter()
 
@@ -50,6 +51,22 @@ def get_dashboard_stats(
         "report_trend": trend
     }
 
+def _get_station_location(db: Session) -> Optional[tuple]:
+    """Return (lat, lng) from system config 'station_location' or None."""
+    row = db.query(SystemConfiguration).filter(SystemConfiguration.key == "station_location").first()
+    if not row or not row.value:
+        return None
+    try:
+        data = json.loads(row.value)
+        lat = data.get("lat")
+        lng = data.get("lng")
+        if lat is not None and lng is not None:
+            return (float(lat), float(lng))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return None
+
+
 @router.get("/gis-tracking")
 def get_gis_tracking(
     db: Session = Depends(get_db),
@@ -71,6 +88,43 @@ def get_gis_tracking(
         for a in agents if a.last_lat is not None
     ]
     return results
+
+
+@router.get("/agents-with-distance")
+def get_agents_with_distance(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    For Region user: table of agents (in their region) with location and distance from station.
+    Station is set in System Config key 'station_location' = {"lat": x, "lng": y}.
+    Returns list of { id, name, lat, lng, last_seen, region_id, distance_km }.
+    """
+    from app.utils.geo import haversine_km
+
+    station = _get_station_location(db)
+    query = db.query(User).filter(User.is_deleted == False)
+    # Region user sees only agents in their region
+    if current_user.role == UserRole.REGION and current_user.region_id is not None:
+        query = query.filter(User.region_id == current_user.region_id)
+    agents = query.all()
+    results = []
+    for a in agents:
+        lat, lng = a.last_lat, a.last_lng
+        distance_km = None
+        if station and lat is not None and lng is not None:
+            distance_km = haversine_km(station[0], station[1], lat, lng)
+        results.append({
+            "id": a.id,
+            "name": a.full_name,
+            "lat": lat,
+            "lng": lng,
+            "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+            "region_id": a.region_id,
+            "distance_km": distance_km,
+            "status": "online" if a.is_active else "offline",
+        })
+    return {"station_configured": station is not None, "agents": results}
 
 @router.get("/audit-logs", response_model=List[general_schema.AuditLog])
 def get_audit_logs(

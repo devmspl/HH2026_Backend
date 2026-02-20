@@ -1,3 +1,4 @@
+import secrets
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -349,6 +350,34 @@ def get_agent_logs(
     # Sort by time
     logs.sort(key=lambda x: x["time"], reverse=True)
     return logs[:20]
+
+
+@router.post("/{agent_id}/reset-password")
+def reset_agent_password(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Generate a new random password for the user and return it (plain).
+    Only SUPER_ADMIN can call this. Use it to set/send password to the user.
+    """
+    if current_user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Super Admin can reset user passwords.",
+        )
+    agent = db.query(User).filter(User.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Generate a random password (e.g. 12 chars, letters + digits)
+    alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    plain_password = "".join(secrets.choice(alphabet) for _ in range(12))
+    agent.hashed_password = get_password_hash(plain_password)
+    db.commit()
+    log_action(db, current_user.id, "RESET_PASSWORD", f"Password reset for user {agent.full_name} (id={agent_id})")
+    return {"password": plain_password}
+
 
 @router.delete("/{agent_id}")
 def delete_agent(

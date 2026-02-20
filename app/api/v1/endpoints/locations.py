@@ -1,10 +1,10 @@
 """Locations API: provinces, districts, regions for dropdowns and maps."""
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.core.auth import get_current_user
 from app.db.session import get_db
-from app.models.user import User, UserRole, Province, District, Region, Camp, RegionalCrop, CropFamily
+from app.models.user import User, UserRole, Province, District, Region, Camp, RegionalCrop, CropFamily, NationalCrop
 
 router = APIRouter()
 
@@ -67,6 +67,29 @@ def list_camps(
     return [{"id": c.id, "name": c.name, "region_id": c.region_id} for c in rows]
 
 
+@router.get("/national-crops", response_model=List[Any])
+def list_national_crops(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """List national crops (id, crop_name, family_name) for survey/report forms."""
+    rows = (
+        db.query(NationalCrop)
+        .options(joinedload(NationalCrop.family))
+        .order_by(NationalCrop.crop_name)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "crop_name": r.crop_name,
+            "family_id": r.family_id,
+            "family_name": r.family.family_name if r.family else None,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/regional-crops", response_model=List[Any])
 def list_regional_crops(
     db: Session = Depends(get_db),
@@ -104,4 +127,37 @@ def list_regional_crops(
             "family_name": r.family.family_name if r.family else None,
         }
         for r in rows
+    ]
+
+
+@router.get("/camp-users", response_model=List[Any])
+def list_camp_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    region_id: Optional[int] = Query(None),
+) -> Any:
+    """
+    CampUserTable (spec): list of camp users with CampID, RegionID, ProvinceID, DistrictID, CampName.
+    Data from users (role=CAMP) joined with camps. Optionally filter by region_id.
+    """
+    query = (
+        db.query(User, Camp)
+        .join(Camp, User.camp_id == Camp.id)
+        .filter(User.role == UserRole.CAMP)
+        .filter(User.is_deleted == False)
+    )
+    if region_id is not None:
+        query = query.filter(Camp.region_id == region_id)
+    rows = query.all()
+    return [
+        {
+            "camp_user_id": u.id,
+            "camp_id": c.id,
+            "region_id": c.region_id,
+            "province_id": c.province_id,
+            "district_id": c.district_id,
+            "camp_name": c.name,
+            "camp_user_name": u.full_name,
+        }
+        for u, c in rows
     ]

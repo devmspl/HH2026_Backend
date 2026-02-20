@@ -51,6 +51,18 @@ def migrate():
                 pass  # already varchar or no enum
             else:
                 print(f"Note: surveys.status conversion skipped: {e}")
+        # CampUserTable (spec): view of camp users with camp details
+        try:
+            db.execute(text("""
+                CREATE OR REPLACE VIEW camp_user_table AS
+                SELECT u.id AS camp_user_id, c.id AS camp_id, c.region_id, c.province_id, c.district_id, c.name AS camp_name
+                FROM users u
+                INNER JOIN camps c ON c.id = u.camp_id
+                WHERE u.role = 'CAMP' AND (u.is_deleted IS NULL OR u.is_deleted = false)
+            """))
+            print("Created/updated view camp_user_table.")
+        except Exception as e:
+            print(f"Note: camp_user_table view skipped: {e}")
         db.commit()
         print("Migration successful: all tables and columns verified.")
     except Exception as e:

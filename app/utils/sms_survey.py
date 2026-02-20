@@ -1,23 +1,44 @@
 def convert_report_to_sms(report_data: dict, title: str, agent_name: str = "Agent") -> str:
     """
-    Converts report/survey data into a compact 160-character SMS text.
+    Converts report/survey data into a compact 160-character SMS text (spec requirement).
 
-    Example output (aligned with client spec):
-    NAT;PF:200;TF:250;SR:5;MAIZ:10T;RICE:5T
+    Handles structure: total_farmers, participating_farmers, spoiled_responses, crops: [{ crop_name, family_name, yield_tonnes }].
+    Example: NAT|TF:250|PF:200|SR:5|MAIZ:10,RICE:5
     """
-    parts = []
+    if not report_data:
+        return (title[:3].upper() or "RPT") + "|BY:" + (agent_name[:8] or "Agent")
 
-    # Prefix with a short title marker (e.g. NAT / REG) and agent name
-    prefix = title[:3].upper()
+    parts = []
+    prefix = (title[:3].upper() or "RPT").replace(" ", "")
     parts.append(prefix)
-    parts.append(f"BY:{agent_name[:10]}")
-    
-    if report_data:
-        for key, value in report_data.items():
-            short_key = key[:4].upper()
-            parts.append(f"{short_key}:{value}")
-    
-    sms_text = ";".join(parts)
+    parts.append("BY:" + (str(agent_name)[:10].replace(" ", "") or "Agent"))
+
+    tf = report_data.get("total_farmers") or report_data.get("total_farmers_region") or 0
+    pf = report_data.get("participating_farmers") or report_data.get("participating_farmers_region") or 0
+    sr = report_data.get("spoiled_responses") or 0
+    parts.append(f"TF:{tf}")
+    parts.append(f"PF:{pf}")
+    parts.append(f"SR:{sr}")
+
+    crops = report_data.get("crops") or []
+    if isinstance(crops, list) and crops:
+        crop_parts = []
+        for c in crops[:15]:  # limit to avoid overflow
+            name = (c.get("crop_name") or c.get("name") or "")[:6].upper().replace(" ", "")
+            y = c.get("yield_tonnes") or c.get("yield") or 0
+            try:
+                y = int(float(y)) if float(y) == int(float(y)) else round(float(y), 1)
+            except (TypeError, ValueError):
+                y = 0
+            if name:
+                crop_parts.append(f"{name}:{y}")
+        if crop_parts:
+            parts.append(",".join(crop_parts)[:80])
+    elif isinstance(report_data.get("crops"), dict):
+        for k, v in list(report_data["crops"].items())[:8]:
+            parts.append(f"{str(k)[:4].upper()}:{v}")
+
+    sms_text = "|".join(parts)
     if len(sms_text) > 160:
         sms_text = sms_text[:157] + "..."
     return sms_text

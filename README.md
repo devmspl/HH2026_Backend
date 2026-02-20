@@ -62,11 +62,7 @@ This is the backend API for the CCNS Customer 180 customer accounting planner ap
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` file with your configuration:
-   - Database connection details
-   - Secret key for JWT
-   - First superuser credentials
-   - Cloudinary settings (if using file uploads)
+   Edit `.env` with database, `SECRET_KEY`, `FIRST_SUPERUSER` / `FIRST_SUPERUSER_PASSWORD`, CORS, and optionally Cloudinary/Twilio. See [ENVIRONMENT.md](ENVIRONMENT.md).
 
 5. **Set up the database**
    ```bash
@@ -104,40 +100,41 @@ The application uses environment variables for configuration. Key variables incl
 
 ## API Endpoints
 
-The API follows RESTful conventions with the following base structure:
+All routes are under `/api/v1`. Authentication: `POST /login/access-token`; then use `Authorization: Bearer <token>`.
 
-- `/api/v1/auth/` - Authentication endpoints
-- `/api/v1/users/` - User management
-- `/api/v1/customers/` - Customer management
-- `/api/v1/agents/` - Agent management
-- `/api/v1/surveys/` - Survey management
-- `/api/v1/reports/` - Report generation
-- `/api/v1/dashboard/` - Dashboard analytics
-- `/api/v1/search/` - Search functionality
-- `/api/v1/notifications/` - Notification system
-- `/api/v1/chat/` - Chat functionality
-- `/api/v1/upload/` - File upload
+- **Login:** `/login/access-token` (POST, form: username, password)
+- **Agents:** `/agents` (CRUD, approval, reset-password, deleted/recover)
+- **Reports:** `/reports` (CRUD, crops/national, provincial, district, region, regional, dominant-map, top-family-by-province)
+- **Locations:** `/locations/provinces`, `/districts`, `/regions`, `/camps`, `/regional-crops`
+- **Dashboard:** `/dashboard/stats`, `/dashboard/gis-tracking`, `/dashboard/audit-logs`
+- **Surveys:** `/surveys` (CRUD; create/edit/delete Super Admin only)
+- **Customers:** `/customers` (CRUD, bulk-upload)
+- **Notifications:** `/notifications/config/{key}`, `/notifications/config` (POST), templates, logs, send, retry
+- **Search:** `/search/confirmation`, `/search/global`
+- **Chat:** `/chat/groups`, messages, auto-create-groups
+- **Upload:** `/upload/media`
+
+Full reference: [../docs/API_REFERENCE.md](../docs/API_REFERENCE.md).
 
 ## Database Management
 
 Several utility scripts are provided for database management:
 
-- `create_db.py` - Create database tables
-- `seed_db.py` - Seed initial data
-- `seed_locations.py` - Seed location data
-- `seed_mock_data.py` - Generate mock data for testing
-- `migrate_db.py` - Run database migrations
-- `reset_db.py` - Reset database (use with caution)
-- `fix_db.py` - Fix database issues
-- `update_db_schema.py` - Update database schema
+- `migrate_db.py` - **Run this first:** creates tables and adds missing columns (idempotent). Use after deploy or schema changes.
+- `seed_dashboard_data.py` - Seed crop families, national crops, locations, agents, reports, regional crops (optional).
+- `create_db.py` - Create database tables (if not using migrate_db).
+- `seed_db.py` - Seed initial data (e.g. first user).
+- `seed_locations.py` - Seed location data.
+- **`reset_keep_superadmin_only.py`** - Sab delete karo, sirf Super Admin (FIRST_SUPERUSER) bache. Phir aap khud agents/customers add karke flow samajh sakte ho.
+- Other: `reset_db.py`, `fix_db.py`, etc. as needed.
 
 ## Authentication
 
 The API uses JWT (JSON Web Tokens) for authentication:
 
-1. Login with `/api/v1/auth/login` to get an access token
-2. Include the token in the Authorization header: `Bearer <token>`
-3. Tokens expire after 8 days (configurable)
+1. Login with `POST /api/v1/login/access-token` (form: username, password) to get an access token.
+2. Include the token in the Authorization header: `Bearer <token>`.
+3. Tokens expire after 8 days (configurable via `ACCESS_TOKEN_EXPIRE_MINUTES`).
 
 ## CORS Configuration
 

@@ -1,7 +1,9 @@
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.core.auth import get_current_user
 from app.db.session import get_db
 from app.models.user import User, UserRole, Customer
@@ -13,6 +15,17 @@ import json
 router = APIRouter()
 
 CAMP_USER_MAX_CUSTOMERS = 100
+
+
+def _customer_to_dict(c: Customer) -> Dict[str, Any]:
+    """Serialize Customer ORM to JSON-safe dict."""
+    d: Dict[str, Any] = {}
+    for col in c.__table__.columns:
+        val = getattr(c, col.name, None)
+        if isinstance(val, datetime):
+            val = val.isoformat() if val else None
+        d[col.name] = val
+    return d
 
 
 class CustomerCreate(BaseModel):
@@ -47,7 +60,7 @@ def get_customers(
     if current_user.role == UserRole.CAMP:
         query = query.filter(Customer.assigned_camp_user_id == current_user.id)
     customers = query.offset(skip).limit(limit).all()
-    return customers
+    return [_customer_to_dict(c) for c in customers]
 
 @router.post("/", response_model=Any)
 def create_customer(
@@ -61,6 +74,9 @@ def create_customer(
     Max 100 customers per Camp user (spec: "add customers to their list maximum 100").
     """
     data = payload.model_dump(exclude_unset=True)
+    # Allow multiple customers without CNIC: treat empty/whitespace as None
+    if data.get("cnic") is not None and (not data["cnic"] or not str(data["cnic"]).strip()):
+        data["cnic"] = None
 
     if current_user.role == UserRole.CAMP:
         current_count = db.query(Customer).filter(
@@ -73,20 +89,36 @@ def create_customer(
             )
         data["assigned_camp_user_id"] = current_user.id
 
-    if payload.cnic:
-        existing = db.query(Customer).filter(Customer.cnic == payload.cnic).first()
+    cnic_val = (payload.cnic and str(payload.cnic).strip()) or None
+    if cnic_val:
+        existing = db.query(Customer).filter(Customer.cnic == cnic_val).first()
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Customer with this CNIC already exists.",
             )
 
-    customer = Customer(**data)
-    db.add(customer)
-    db.commit()
-    db.refresh(customer)
-    log_action(db, current_user.id, "CREATE_CUSTOMER", f"Created customer {customer.full_name}")
-    return customer
+    if cnic_val is not None:
+        data["cnic"] = cnic_val
+    try:
+        customer = Customer(**data)
+        db.add(customer)
+        db.commit()
+        db.refresh(customer)
+        log_action(db, current_user.id, "CREATE_CUSTOMER", f"Created customer {customer.full_name}")
+        return _customer_to_dict(customer)
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid data (e.g. location or agent ID not found). Check Province, District, Region, Camp and Agent.",
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create customer: {str(e)}",
+        )
 
 
 @router.put("/{customer_id}", response_model=Any)
@@ -112,15 +144,24 @@ def update_customer(
             )
 
     data = payload.model_dump(exclude_unset=True)
+    if data.get("cnic") is not None and (not data["cnic"] or not str(data["cnic"]).strip()):
+        data["cnic"] = None
     if current_user.role == UserRole.CAMP:
         data.pop("assigned_camp_user_id", None)  # Camp user cannot reassign
 
     for k, v in data.items():
         setattr(customer, k, v)
-    db.commit()
-    db.refresh(customer)
-    log_action(db, current_user.id, "UPDATE_CUSTOMER", f"Updated customer {customer.full_name}")
-    return customer
+    try:
+        db.commit()
+        db.refresh(customer)
+        log_action(db, current_user.id, "UPDATE_CUSTOMER", f"Updated customer {customer.full_name}")
+        return _customer_to_dict(customer)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid data (e.g. location or agent ID not found).",
+        )
 
 
 @router.get("/{customer_id}", response_model=Any)
@@ -138,7 +179,7 @@ def get_customer(
         raise HTTPException(status_code=404, detail="Customer not found")
     if current_user.role == UserRole.CAMP and customer.assigned_camp_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Customer not found")
-    return customer
+    return _customer_to_dict(customer)
 
 @router.post("/bulk-upload")
 async def bulk_upload_customers(
