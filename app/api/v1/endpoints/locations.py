@@ -1,12 +1,255 @@
 """Locations API: provinces, districts, regions for dropdowns and maps."""
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from app.core.auth import get_current_user
 from app.db.session import get_db
 from app.models.user import User, UserRole, Province, District, Region, Camp, RegionalCrop, CropFamily, NationalCrop
 
 router = APIRouter()
+
+
+# ==================== Pydantic Schemas ====================
+
+class CropFamilyCreate(BaseModel):
+    family_name: str
+    label: Optional[str] = None
+    picture: Optional[str] = None
+
+class CropFamilyUpdate(BaseModel):
+    family_name: Optional[str] = None
+    label: Optional[str] = None
+    picture: Optional[str] = None
+
+class NationalCropCreate(BaseModel):
+    crop_name: str
+    family_id: Optional[int] = None
+    picture: Optional[str] = None
+
+class NationalCropUpdate(BaseModel):
+    crop_name: Optional[str] = None
+    family_id: Optional[int] = None
+    picture: Optional[str] = None
+
+
+# Province schemas
+class ProvinceCreate(BaseModel):
+    name: str
+    main_crop_family_id: Optional[int] = None
+
+class ProvinceUpdate(BaseModel):
+    name: Optional[str] = None
+    main_crop_family_id: Optional[int] = None
+
+# District schemas
+class DistrictCreate(BaseModel):
+    name: str
+    province_id: int
+    main_crop_family_id: Optional[int] = None
+
+class DistrictUpdate(BaseModel):
+    name: Optional[str] = None
+    province_id: Optional[int] = None
+    main_crop_family_id: Optional[int] = None
+
+# Region schemas
+class RegionCreate(BaseModel):
+    name: str
+    district_id: int
+    province_id: Optional[int] = None
+    main_crop_family_id: Optional[int] = None
+
+class RegionUpdate(BaseModel):
+    name: Optional[str] = None
+    district_id: Optional[int] = None
+    province_id: Optional[int] = None
+    main_crop_family_id: Optional[int] = None
+
+# Camp schemas
+class CampCreate(BaseModel):
+    name: str
+    region_id: int
+    district_id: Optional[int] = None
+    province_id: Optional[int] = None
+
+class CampUpdate(BaseModel):
+    name: Optional[str] = None
+    region_id: Optional[int] = None
+    district_id: Optional[int] = None
+    province_id: Optional[int] = None
+
+
+# ==================== Crop Families CRUD ====================
+
+@router.get("/crop-families", response_model=List[Any])
+def list_crop_families(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """List all crop families."""
+    rows = db.query(CropFamily).order_by(CropFamily.family_name).all()
+    return [{"id": f.id, "family_name": f.family_name, "label": f.label, "picture": f.picture} for f in rows]
+
+@router.post("/crop-families", response_model=Any)
+def create_crop_family(
+    payload: CropFamilyCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Create a new crop family. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can create crop families")
+    family = CropFamily(
+        family_name=payload.family_name,
+        label=payload.label,
+        picture=payload.picture,
+    )
+    db.add(family)
+    db.commit()
+    db.refresh(family)
+    return {"id": family.id, "family_name": family.family_name, "label": family.label, "picture": family.picture}
+
+@router.put("/crop-families/{family_id}", response_model=Any)
+def update_crop_family(
+    family_id: int,
+    payload: CropFamilyUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Update a crop family. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can update crop families")
+    family = db.query(CropFamily).filter(CropFamily.id == family_id).first()
+    if not family:
+        raise HTTPException(status_code=404, detail="Crop family not found")
+    if payload.family_name is not None:
+        family.family_name = payload.family_name
+    if payload.label is not None:
+        family.label = payload.label
+    if payload.picture is not None:
+        family.picture = payload.picture
+    db.commit()
+    db.refresh(family)
+    return {"id": family.id, "family_name": family.family_name, "label": family.label, "picture": family.picture}
+
+@router.delete("/crop-families/{family_id}")
+def delete_crop_family(
+    family_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Delete a crop family. Admin only."""
+    from sqlalchemy.exc import IntegrityError
+    
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can delete crop families")
+    family = db.query(CropFamily).filter(CropFamily.id == family_id).first()
+    if not family:
+        raise HTTPException(status_code=404, detail="Crop family not found")
+    
+    # Check if any national crops are linked to this family
+    linked_national = db.query(NationalCrop).filter(NationalCrop.family_id == family_id).count()
+    linked_regional = db.query(RegionalCrop).filter(RegionalCrop.family_id == family_id).count()
+    linked_provinces = db.query(Province).filter(Province.main_crop_family_id == family_id).count()
+    linked_districts = db.query(District).filter(District.main_crop_family_id == family_id).count()
+    linked_regions = db.query(Region).filter(Region.main_crop_family_id == family_id).count()
+    
+    total_linked = linked_national + linked_regional + linked_provinces + linked_districts + linked_regions
+    
+    if total_linked > 0:
+        details = []
+        if linked_national > 0:
+            details.append(f"{linked_national} national crop(s)")
+        if linked_regional > 0:
+            details.append(f"{linked_regional} regional crop(s)")
+        if linked_provinces > 0:
+            details.append(f"{linked_provinces} province(s)")
+        if linked_districts > 0:
+            details.append(f"{linked_districts} district(s)")
+        if linked_regions > 0:
+            details.append(f"{linked_regions} region(s)")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete '{family.family_name}' - linked to: {', '.join(details)}. Remove links first."
+        )
+    
+    try:
+        db.delete(family)
+        db.commit()
+        return {"message": "Crop family deleted"}
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Cannot delete - still has references in database")
+
+
+# ==================== National Crops CRUD ====================
+
+@router.post("/national-crops", response_model=Any)
+def create_national_crop(
+    payload: NationalCropCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Create a new national crop. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can create national crops")
+    crop = NationalCrop(
+        crop_name=payload.crop_name,
+        family_id=payload.family_id,
+        picture=payload.picture,
+    )
+    db.add(crop)
+    db.commit()
+    db.refresh(crop)
+    family_name = None
+    if crop.family_id:
+        family = db.query(CropFamily).filter(CropFamily.id == crop.family_id).first()
+        family_name = family.family_name if family else None
+    return {"id": crop.id, "crop_name": crop.crop_name, "family_id": crop.family_id, "family_name": family_name, "picture": crop.picture}
+
+@router.put("/national-crops/{crop_id}", response_model=Any)
+def update_national_crop(
+    crop_id: int,
+    payload: NationalCropUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Update a national crop. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can update national crops")
+    crop = db.query(NationalCrop).filter(NationalCrop.id == crop_id).first()
+    if not crop:
+        raise HTTPException(status_code=404, detail="National crop not found")
+    if payload.crop_name is not None:
+        crop.crop_name = payload.crop_name
+    if payload.family_id is not None:
+        crop.family_id = payload.family_id
+    if payload.picture is not None:
+        crop.picture = payload.picture
+    db.commit()
+    db.refresh(crop)
+    family_name = None
+    if crop.family_id:
+        family = db.query(CropFamily).filter(CropFamily.id == crop.family_id).first()
+        family_name = family.family_name if family else None
+    return {"id": crop.id, "crop_name": crop.crop_name, "family_id": crop.family_id, "family_name": family_name, "picture": crop.picture}
+
+@router.delete("/national-crops/{crop_id}")
+def delete_national_crop(
+    crop_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Delete a national crop. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can delete national crops")
+    crop = db.query(NationalCrop).filter(NationalCrop.id == crop_id).first()
+    if not crop:
+        raise HTTPException(status_code=404, detail="National crop not found")
+    db.delete(crop)
+    db.commit()
+    return {"message": "National crop deleted"}
 
 
 @router.get("/provinces", response_model=List[Any])
@@ -161,3 +404,280 @@ def list_camp_users(
         }
         for u, c in rows
     ]
+
+
+# ==================== Province CRUD ====================
+
+@router.post("/provinces", response_model=Any)
+def create_province(
+    payload: ProvinceCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Create a new province. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can create provinces")
+    province = Province(
+        name=payload.name,
+        main_crop_family_id=payload.main_crop_family_id,
+    )
+    db.add(province)
+    db.commit()
+    db.refresh(province)
+    return {"id": province.id, "name": province.name, "main_crop_family_id": province.main_crop_family_id}
+
+@router.put("/provinces/{province_id}", response_model=Any)
+def update_province(
+    province_id: int,
+    payload: ProvinceUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Update a province. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can update provinces")
+    province = db.query(Province).filter(Province.id == province_id).first()
+    if not province:
+        raise HTTPException(status_code=404, detail="Province not found")
+    if payload.name is not None:
+        province.name = payload.name
+    if payload.main_crop_family_id is not None:
+        province.main_crop_family_id = payload.main_crop_family_id
+    db.commit()
+    db.refresh(province)
+    return {"id": province.id, "name": province.name, "main_crop_family_id": province.main_crop_family_id}
+
+@router.delete("/provinces/{province_id}")
+def delete_province(
+    province_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Delete a province. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can delete provinces")
+    province = db.query(Province).filter(Province.id == province_id).first()
+    if not province:
+        raise HTTPException(status_code=404, detail="Province not found")
+    # Check linked districts
+    linked = db.query(District).filter(District.province_id == province_id).count()
+    if linked > 0:
+        raise HTTPException(status_code=400, detail=f"Cannot delete - {linked} district(s) linked to this province")
+    db.delete(province)
+    db.commit()
+    return {"message": "Province deleted"}
+
+
+# ==================== District CRUD ====================
+
+@router.post("/districts", response_model=Any)
+def create_district(
+    payload: DistrictCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Create a new district. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can create districts")
+    district = District(
+        name=payload.name,
+        province_id=payload.province_id,
+        main_crop_family_id=payload.main_crop_family_id,
+    )
+    db.add(district)
+    db.commit()
+    db.refresh(district)
+    return {"id": district.id, "name": district.name, "province_id": district.province_id, "main_crop_family_id": district.main_crop_family_id}
+
+@router.put("/districts/{district_id}", response_model=Any)
+def update_district(
+    district_id: int,
+    payload: DistrictUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Update a district. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can update districts")
+    district = db.query(District).filter(District.id == district_id).first()
+    if not district:
+        raise HTTPException(status_code=404, detail="District not found")
+    if payload.name is not None:
+        district.name = payload.name
+    if payload.province_id is not None:
+        district.province_id = payload.province_id
+    if payload.main_crop_family_id is not None:
+        district.main_crop_family_id = payload.main_crop_family_id
+    db.commit()
+    db.refresh(district)
+    return {"id": district.id, "name": district.name, "province_id": district.province_id, "main_crop_family_id": district.main_crop_family_id}
+
+@router.delete("/districts/{district_id}")
+def delete_district(
+    district_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Delete a district. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can delete districts")
+    district = db.query(District).filter(District.id == district_id).first()
+    if not district:
+        raise HTTPException(status_code=404, detail="District not found")
+    # Check linked regions
+    linked = db.query(Region).filter(Region.district_id == district_id).count()
+    if linked > 0:
+        raise HTTPException(status_code=400, detail=f"Cannot delete - {linked} region(s) linked to this district")
+    db.delete(district)
+    db.commit()
+    return {"message": "District deleted"}
+
+
+# ==================== Region CRUD ====================
+
+@router.post("/regions", response_model=Any)
+def create_region(
+    payload: RegionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Create a new region. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can create regions")
+    # Get province_id from district if not provided
+    province_id = payload.province_id
+    if not province_id:
+        district = db.query(District).filter(District.id == payload.district_id).first()
+        if district:
+            province_id = district.province_id
+    region = Region(
+        name=payload.name,
+        district_id=payload.district_id,
+        province_id=province_id,
+        main_crop_family_id=payload.main_crop_family_id,
+    )
+    db.add(region)
+    db.commit()
+    db.refresh(region)
+    return {"id": region.id, "name": region.name, "district_id": region.district_id, "province_id": region.province_id, "main_crop_family_id": region.main_crop_family_id}
+
+@router.put("/regions/{region_id}", response_model=Any)
+def update_region(
+    region_id: int,
+    payload: RegionUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Update a region. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can update regions")
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    if payload.name is not None:
+        region.name = payload.name
+    if payload.district_id is not None:
+        region.district_id = payload.district_id
+    if payload.province_id is not None:
+        region.province_id = payload.province_id
+    if payload.main_crop_family_id is not None:
+        region.main_crop_family_id = payload.main_crop_family_id
+    db.commit()
+    db.refresh(region)
+    return {"id": region.id, "name": region.name, "district_id": region.district_id, "province_id": region.province_id, "main_crop_family_id": region.main_crop_family_id}
+
+@router.delete("/regions/{region_id}")
+def delete_region(
+    region_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Delete a region. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can delete regions")
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    # Check linked camps
+    linked = db.query(Camp).filter(Camp.region_id == region_id).count()
+    if linked > 0:
+        raise HTTPException(status_code=400, detail=f"Cannot delete - {linked} camp(s) linked to this region")
+    db.delete(region)
+    db.commit()
+    return {"message": "Region deleted"}
+
+
+# ==================== Camp CRUD ====================
+
+@router.post("/camps", response_model=Any)
+def create_camp(
+    payload: CampCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Create a new camp. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can create camps")
+    # Get district_id and province_id from region if not provided
+    district_id = payload.district_id
+    province_id = payload.province_id
+    if not district_id or not province_id:
+        region = db.query(Region).filter(Region.id == payload.region_id).first()
+        if region:
+            district_id = district_id or region.district_id
+            province_id = province_id or region.province_id
+    camp = Camp(
+        name=payload.name,
+        region_id=payload.region_id,
+        district_id=district_id,
+        province_id=province_id,
+    )
+    db.add(camp)
+    db.commit()
+    db.refresh(camp)
+    return {"id": camp.id, "name": camp.name, "region_id": camp.region_id, "district_id": camp.district_id, "province_id": camp.province_id}
+
+@router.put("/camps/{camp_id}", response_model=Any)
+def update_camp(
+    camp_id: int,
+    payload: CampUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Update a camp. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can update camps")
+    camp = db.query(Camp).filter(Camp.id == camp_id).first()
+    if not camp:
+        raise HTTPException(status_code=404, detail="Camp not found")
+    if payload.name is not None:
+        camp.name = payload.name
+    if payload.region_id is not None:
+        camp.region_id = payload.region_id
+    if payload.district_id is not None:
+        camp.district_id = payload.district_id
+    if payload.province_id is not None:
+        camp.province_id = payload.province_id
+    db.commit()
+    db.refresh(camp)
+    return {"id": camp.id, "name": camp.name, "region_id": camp.region_id, "district_id": camp.district_id, "province_id": camp.province_id}
+
+@router.delete("/camps/{camp_id}")
+def delete_camp(
+    camp_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Delete a camp. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can delete camps")
+    camp = db.query(Camp).filter(Camp.id == camp_id).first()
+    if not camp:
+        raise HTTPException(status_code=404, detail="Camp not found")
+    # Check linked users
+    linked = db.query(User).filter(User.camp_id == camp_id).count()
+    if linked > 0:
+        raise HTTPException(status_code=400, detail=f"Cannot delete - {linked} user(s) assigned to this camp")
+    db.delete(camp)
+    db.commit()
+    return {"message": "Camp deleted"}

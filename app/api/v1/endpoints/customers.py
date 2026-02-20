@@ -30,6 +30,10 @@ def _customer_to_dict(c: Customer) -> Dict[str, Any]:
 
 class CustomerCreate(BaseModel):
     full_name: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[str] = None  # Male, Female, Other
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
@@ -44,6 +48,7 @@ class CustomerCreate(BaseModel):
     household: Optional[str] = None
     education_level: Optional[str] = None
     emp_status: Optional[str] = None
+    photo: Optional[str] = None
 
 @router.get("/", response_model=List[Any])
 def get_customers(
@@ -100,11 +105,25 @@ def create_customer(
 
     if cnic_val is not None:
         data["cnic"] = cnic_val
+    
+    # Auto-generate farmer_id if not provided
+    if not data.get("farmer_id"):
+        # Get the max existing farmer_id number
+        last_customer = db.query(Customer).order_by(Customer.id.desc()).first()
+        next_num = (last_customer.id + 1) if last_customer else 1
+        data["farmer_id"] = f"FRM-{next_num:06d}"
+    
     try:
         customer = Customer(**data)
         db.add(customer)
         db.commit()
         db.refresh(customer)
+        
+        # Update farmer_id with actual ID for uniqueness
+        if customer.farmer_id.startswith("FRM-"):
+            customer.farmer_id = f"FRM-{customer.id:06d}"
+            db.commit()
+            db.refresh(customer)
         log_action(db, current_user.id, "CREATE_CUSTOMER", f"Created customer {customer.full_name}")
         return _customer_to_dict(customer)
     except IntegrityError as e:

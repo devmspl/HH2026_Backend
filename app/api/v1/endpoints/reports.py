@@ -593,7 +593,6 @@ def create_report(
 
     # Trigger SMS notification for all report submissions
     from app.utils.sms_survey import convert_report_to_sms, send_survey_sms
-    from app.models.user import User
     
     agent = db.query(User).filter(User.id == report_in.agent_id).first()
     agent_name = agent.full_name if agent else "Unknown Agent"
