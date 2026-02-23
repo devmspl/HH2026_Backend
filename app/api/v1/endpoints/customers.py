@@ -211,6 +211,9 @@ async def bulk_upload_customers(
     Process CSV upload and create customers.
     CSV Header: full_name, phone, email, address, cnic
     """
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
     content = await file.read()
     try:
         try:
@@ -218,13 +221,18 @@ async def bulk_upload_customers(
         except UnicodeDecodeError:
             decoded = content.decode('latin-1')
 
-        # Normalize line endings to avoid _csv.Error: new-line character seen in unquoted field
+        # Normalize line endings
         normalized_content = decoded.replace('\r\n', '\n').replace('\r', '\n')
         f = io.StringIO(normalized_content)
         reader = csv.DictReader(f)
         
+        # Header Validation
+        expected_headers = ['full_name', 'phone', 'email', 'address', 'cnic', 'age', 'gender']
+        if not all(h in (reader.fieldnames or []) for h in expected_headers):
+            raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+
         customers_count = 0
-        # Camp user cap: max 100 customers per Camp user
+        # Camp user cap
         if current_user.role == UserRole.CAMP:
             current_count = db.query(Customer).filter(
                 Customer.assigned_camp_user_id == current_user.id
@@ -235,24 +243,28 @@ async def bulk_upload_customers(
             if not any(row.values()):
                 continue
 
-            # Camp user: enforce max 100
-            if current_user.role == UserRole.CAMP:
-                if current_count + customers_count >= CAMP_USER_MAX_CUSTOMERS:
-                    break  # Stop adding; we've hit the cap
-
-            # Check if customer already exists by CNIC
+            full_name = row.get('full_name', 'Unnamed').strip()
+            phone = row.get('phone', '').strip()
             cnic = row.get('cnic', '').strip()
+
+            # Check if customer already exists by CNIC or (Name + Phone)
             if cnic:
                 existing = db.query(Customer).filter(Customer.cnic == cnic).first()
                 if existing:
                     continue
+            elif full_name and phone:
+                existing = db.query(Customer).filter(Customer.full_name == full_name, Customer.phone == phone).first()
+                if existing:
+                    continue
 
             customer = Customer(
-                full_name=row.get('full_name', 'Unnamed').strip(),
-                phone=row.get('phone', '').strip(),
+                full_name=full_name,
+                phone=phone,
                 email=row.get('email', '').strip(),
                 address=row.get('address', '').strip(),
                 cnic=cnic,
+                age=int(row.get('age')) if row.get('age') and str(row.get('age')).isdigit() else None,
+                gender=row.get('gender', '').strip(),
                 category=category
             )
             if current_user.role == UserRole.CAMP:

@@ -1,6 +1,6 @@
 """Locations API: provinces, districts, regions for dropdowns and maps."""
 from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from app.core.auth import get_current_user
@@ -681,3 +681,303 @@ def delete_camp(
     db.delete(camp)
     db.commit()
     return {"message": "Camp deleted"}
+
+
+# ==================== Bulk Upload Endpoints ====================
+
+@router.post("/national-crops/bulk-upload")
+async def bulk_upload_national_crops(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Bulk upload national crops from CSV (crop_name, family_name)."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can bulk upload crops")
+    
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
+    import csv
+    import io
+
+    content = await file.read()
+    try:
+        decoded = content.decode('utf-8')
+    except UnicodeDecodeError:
+        decoded = content.decode('latin-1')
+    
+    f = io.StringIO(decoded)
+    reader = csv.DictReader(f)
+    
+    # Header Validation
+    expected_headers = ['crop_name', 'family_name']
+    if not all(h in reader.fieldnames for h in expected_headers):
+        raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+    
+    count = 0
+    for row in reader:
+        crop_name = row.get('crop_name', '').strip()
+        family_name = row.get('family_name', '').strip()
+        
+        if not crop_name:
+            continue
+            
+        # Find family_id if family_name provided
+        family_id = None
+        if family_name:
+            family = db.query(CropFamily).filter(CropFamily.family_name == family_name).first()
+            if family:
+                family_id = family.id
+            else:
+                # Optionally create family if not exists? For now, just skip or leave None
+                pass
+        
+        # Check if crop already exists
+        existing = db.query(NationalCrop).filter(NationalCrop.crop_name == crop_name).first()
+        if existing:
+            if family_id:
+                existing.family_id = family_id
+            continue
+            
+        crop = NationalCrop(crop_name=crop_name, family_id=family_id)
+        db.add(crop)
+        count += 1
+        
+    db.commit()
+    return {"message": f"Successfully imported {count} national crops"}
+
+@router.post("/crop-families/bulk-upload")
+async def bulk_upload_crop_families(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Bulk upload crop families from CSV (family_name)."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can bulk upload crop families")
+    
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
+    import csv
+    import io
+
+    content = await file.read()
+    try:
+        decoded = content.decode('utf-8')
+    except UnicodeDecodeError:
+        decoded = content.decode('latin-1')
+    
+    f = io.StringIO(decoded)
+    reader = csv.DictReader(f)
+    
+    # Header Validation
+    expected_headers = ['family_name']
+    if not all(h in (reader.fieldnames or []) for h in expected_headers):
+        raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+    
+    count = 0
+    for row in reader:
+        name = row.get('family_name', '').strip()
+        if not name:
+            continue
+        
+        existing = db.query(CropFamily).filter(CropFamily.family_name == name).first()
+        if not existing:
+            db.add(CropFamily(family_name=name))
+            count += 1
+            
+    db.commit()
+    return {"message": f"Successfully imported {count} crop families"}
+
+@router.post("/provinces/bulk-upload")
+async def bulk_upload_provinces(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Bulk upload provinces from CSV (province_name)."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can bulk upload provinces")
+    
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
+    import csv
+    import io
+
+    content = await file.read()
+    try:
+        decoded = content.decode('utf-8')
+    except UnicodeDecodeError:
+        decoded = content.decode('latin-1')
+    
+    f = io.StringIO(decoded)
+    reader = csv.DictReader(f)
+    
+    # Header Validation
+    expected_headers = ['province_name']
+    if not all(h in reader.fieldnames for h in expected_headers):
+        raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+    
+    count = 0
+    for row in reader:
+        name = row.get('province_name', '').strip()
+        if not name:
+            continue
+        
+        existing = db.query(Province).filter(Province.name == name).first()
+        if not existing:
+            db.add(Province(name=name))
+            count += 1
+            
+    db.commit()
+    return {"message": f"Successfully imported {count} provinces"}
+
+@router.post("/districts/bulk-upload")
+async def bulk_upload_districts(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Bulk upload districts from CSV (district_name, province_name)."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can bulk upload districts")
+    
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
+    import csv
+    import io
+
+    content = await file.read()
+    try:
+        decoded = content.decode('utf-8')
+    except UnicodeDecodeError:
+        decoded = content.decode('latin-1')
+    
+    f = io.StringIO(decoded)
+    reader = csv.DictReader(f)
+    
+    # Header Validation
+    expected_headers = ['district_name', 'province_name']
+    if not all(h in reader.fieldnames for h in expected_headers):
+        raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+    
+    count = 0
+    for row in reader:
+        d_name = row.get('district_name', '').strip()
+        p_name = row.get('province_name', '').strip()
+        if not d_name or not p_name:
+            continue
+        
+        province = db.query(Province).filter(Province.name == p_name).first()
+        if not province:
+            continue
+            
+        existing = db.query(District).filter(District.name == d_name, District.province_id == province.id).first()
+        if not existing:
+            db.add(District(name=d_name, province_id=province.id))
+            count += 1
+            
+    db.commit()
+    return {"message": f"Successfully imported {count} districts"}
+
+@router.post("/regions/bulk-upload")
+async def bulk_upload_regions(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Bulk upload regions from CSV (region_name, district_name)."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can bulk upload regions")
+    
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
+    import csv
+    import io
+
+    content = await file.read()
+    try:
+        decoded = content.decode('utf-8')
+    except UnicodeDecodeError:
+        decoded = content.decode('latin-1')
+    
+    f = io.StringIO(decoded)
+    reader = csv.DictReader(f)
+    
+    # Header Validation
+    expected_headers = ['region_name', 'district_name']
+    if not all(h in reader.fieldnames for h in expected_headers):
+        raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+    
+    count = 0
+    for row in reader:
+        r_name = row.get('region_name', '').strip()
+        d_name = row.get('district_name', '').strip()
+        if not r_name or not d_name:
+            continue
+        
+        district = db.query(District).filter(District.name == d_name).first()
+        if not district:
+            continue
+            
+        existing = db.query(Region).filter(Region.name == r_name, Region.district_id == district.id).first()
+        if not existing:
+            db.add(Region(name=r_name, district_id=district.id, province_id=district.province_id))
+            count += 1
+            
+    db.commit()
+    return {"message": f"Successfully imported {count} regions"}
+
+@router.post("/camps/bulk-upload")
+async def bulk_upload_camps(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Bulk upload camps from CSV (camp_name, region_name)."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can bulk upload camps")
+    
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
+    import csv
+    import io
+
+    content = await file.read()
+    try:
+        decoded = content.decode('utf-8')
+    except UnicodeDecodeError:
+        decoded = content.decode('latin-1')
+    
+    f = io.StringIO(decoded)
+    reader = csv.DictReader(f)
+    
+    # Header Validation
+    expected_headers = ['camp_name', 'region_name']
+    if not all(h in reader.fieldnames for h in expected_headers):
+        raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+    
+    count = 0
+    for row in reader:
+        c_name = row.get('camp_name', '').strip()
+        r_name = row.get('region_name', '').strip()
+        if not c_name or not r_name:
+            continue
+        
+        region = db.query(Region).filter(Region.name == r_name).first()
+        if not region:
+            continue
+            
+        existing = db.query(Camp).filter(Camp.name == c_name, Camp.region_id == region.id).first()
+        if not existing:
+            db.add(Camp(name=c_name, region_id=region.id, district_id=region.district_id, province_id=region.province_id))
+            count += 1
+            
+    db.commit()
+    return {"message": f"Successfully imported {count} camps"}
