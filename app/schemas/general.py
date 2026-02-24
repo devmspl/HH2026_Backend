@@ -34,7 +34,9 @@ class ReportCreate(ReportBase):
     media: Optional[List[dict]] = None # List of {url, type, name}
     status: Optional[str] = "pending"
     province_id: Optional[int] = None  # For Crop Domination Map (By Province)
+    district_id: Optional[int] = None
     region_id: Optional[int] = None    # For Crop Domination Map (By Region)
+
 
 class ReportUpdate(BaseModel):
     title: Optional[str] = None

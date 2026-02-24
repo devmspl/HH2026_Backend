@@ -272,10 +272,12 @@ def get_regional_crops_tally(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     region_id: Optional[int] = None,
+    district_id: Optional[int] = None,
+    province_id: Optional[int] = None,
 ) -> Any:
     """
     Regional crops tally: RegionalCropName | Family | RegionName | District | Province | Yield | ACustomers | %.
-    Uses reports from Regional Crops Survey; optional filter by region_id.
+    Uses reports from Regional Crops Survey; optional filter by region_id, district_id, or province_id.
     """
     from app.models.user import Survey, Region, District, Province
     query = (
@@ -285,6 +287,10 @@ def get_regional_crops_tally(
     )
     if region_id is not None:
         query = query.filter(Report.region_id == region_id)
+    if district_id is not None:
+        query = query.filter(Report.district_id == district_id)
+    if province_id is not None:
+        query = query.filter(Report.province_id == province_id)
     reports = query.all()
 
     total_farmers = 0
@@ -555,10 +561,11 @@ def create_report(
 
     # Set report location: from request (admin), else from agent (for Crop Domination Map)
     province_id = getattr(report_in, "province_id", None)
+    district_id = getattr(report_in, "district_id", None)
     region_id = getattr(report_in, "region_id", None)
-    district_id = None
     camp_id = None
-    if province_id is None and region_id is None:
+
+    if province_id is None and district_id is None and region_id is None:
         if current_user.role == UserRole.AGENT and current_user.id == report_agent_id:
             province_id = getattr(current_user, "province_id", None)
             district_id = getattr(current_user, "district_id", None)
@@ -571,6 +578,7 @@ def create_report(
                 district_id = getattr(agent_user, "district_id", None)
                 region_id = getattr(agent_user, "region_id", None)
                 camp_id = getattr(agent_user, "camp_id", None)
+
 
     db_obj = Report(
         agent_id=report_in.agent_id,
