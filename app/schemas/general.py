@@ -141,6 +141,7 @@ class NationalCropRow(BaseModel):
     """
     One row for the National crops table.
     """
+    crop_id: Optional[str] = None
     crop_name: str
     family_name: str
     yield_tonnes: float
@@ -176,6 +177,8 @@ class NationalCropReport(BaseModel):
 
 class RegionalCropTallyRow(BaseModel):
     """One row for Regional crops tally table."""
+    rcrop_id: Optional[str] = None
+    crop_id: Optional[str] = None # Support both names for flexibility
     regional_crop_name: str
     family_name: str
     region_name: Optional[str] = None

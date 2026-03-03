@@ -26,11 +26,27 @@ class NationalCropCreate(BaseModel):
     crop_name: str
     family_id: Optional[int] = None
     picture: Optional[str] = None
+    crop_id: Optional[str] = None
 
 class NationalCropUpdate(BaseModel):
     crop_name: Optional[str] = None
     family_id: Optional[int] = None
     picture: Optional[str] = None
+    crop_id: Optional[str] = None
+
+class RegionalCropCreate(BaseModel):
+    crop_name: str
+    region_id: int
+    family_id: Optional[int] = None
+    picture: Optional[str] = None
+    rcrop_id: Optional[str] = None
+
+class RegionalCropUpdate(BaseModel):
+    crop_name: Optional[str] = None
+    region_id: Optional[int] = None
+    family_id: Optional[int] = None
+    picture: Optional[str] = None
+    rcrop_id: Optional[str] = None
 
 
 # Province schemas
@@ -198,6 +214,7 @@ def create_national_crop(
         crop_name=payload.crop_name,
         family_id=payload.family_id,
         picture=payload.picture,
+        crop_id=payload.crop_id,
     )
     db.add(crop)
     db.commit()
@@ -206,7 +223,7 @@ def create_national_crop(
     if crop.family_id:
         family = db.query(CropFamily).filter(CropFamily.id == crop.family_id).first()
         family_name = family.family_name if family else None
-    return {"id": crop.id, "crop_name": crop.crop_name, "family_id": crop.family_id, "family_name": family_name, "picture": crop.picture}
+    return {"id": crop.id, "crop_name": crop.crop_name, "family_id": crop.family_id, "family_name": family_name, "picture": crop.picture, "crop_id": crop.crop_id}
 
 @router.put("/national-crops/{crop_id}", response_model=Any)
 def update_national_crop(
@@ -227,13 +244,15 @@ def update_national_crop(
         crop.family_id = payload.family_id
     if payload.picture is not None:
         crop.picture = payload.picture
+    if payload.crop_id is not None:
+        crop.crop_id = payload.crop_id
     db.commit()
     db.refresh(crop)
     family_name = None
     if crop.family_id:
         family = db.query(CropFamily).filter(CropFamily.id == crop.family_id).first()
         family_name = family.family_name if family else None
-    return {"id": crop.id, "crop_name": crop.crop_name, "family_id": crop.family_id, "family_name": family_name, "picture": crop.picture}
+    return {"id": crop.id, "crop_name": crop.crop_name, "family_id": crop.family_id, "family_name": family_name, "picture": crop.picture, "crop_id": crop.crop_id}
 
 @router.delete("/national-crops/{crop_id}")
 def delete_national_crop(
@@ -328,6 +347,7 @@ def list_national_crops(
             "crop_name": r.crop_name,
             "family_id": r.family_id,
             "family_name": r.family.family_name if r.family else None,
+            "picture": r.picture,
         }
         for r in rows
     ]
@@ -368,9 +388,89 @@ def list_regional_crops(
             "family_id": r.family_id,
             "region_id": r.region_id,
             "family_name": r.family.family_name if r.family else None,
+            "picture": r.picture,
+            "rcrop_id": r.rcrop_id,
         }
         for r in rows
     ]
+
+@router.post("/regional-crops", response_model=Any)
+def create_regional_crop(
+    payload: RegionalCropCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Create a new regional crop. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can create regional crops")
+    crop = RegionalCrop(
+        crop_name=payload.crop_name,
+        region_id=payload.region_id,
+        family_id=payload.family_id,
+        picture=payload.picture,
+        rcrop_id=payload.rcrop_id,
+    )
+    db.add(crop)
+    db.commit()
+    db.refresh(crop)
+    return {
+        "id": crop.id, 
+        "crop_name": crop.crop_name, 
+        "region_id": crop.region_id, 
+        "family_id": crop.family_id,
+        "family_name": crop.family.family_name if crop.family else None,
+        "picture": crop.picture
+    }
+
+@router.put("/regional-crops/{crop_id}", response_model=Any)
+def update_regional_crop(
+    crop_id: int,
+    payload: RegionalCropUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Update a regional crop. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can update regional crops")
+    crop = db.query(RegionalCrop).filter(RegionalCrop.id == crop_id).first()
+    if not crop:
+        raise HTTPException(status_code=404, detail="Regional crop not found")
+    if payload.crop_name is not None:
+        crop.crop_name = payload.crop_name
+    if payload.region_id is not None:
+        crop.region_id = payload.region_id
+    if payload.family_id is not None:
+        crop.family_id = payload.family_id
+    if payload.picture is not None:
+        crop.picture = payload.picture
+    if payload.rcrop_id is not None:
+        crop.rcrop_id = payload.rcrop_id
+    db.commit()
+    db.refresh(crop)
+    return {
+        "id": crop.id, 
+        "crop_name": crop.crop_name, 
+        "region_id": crop.region_id, 
+        "family_id": crop.family_id,
+        "family_name": crop.family.family_name if crop.family else None,
+        "picture": crop.picture
+    }
+
+@router.delete("/regional-crops/{crop_id}")
+def delete_regional_crop(
+    crop_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Delete a regional crop. Admin only."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can delete regional crops")
+    crop = db.query(RegionalCrop).filter(RegionalCrop.id == crop_id).first()
+    if not crop:
+        raise HTTPException(status_code=404, detail="Regional crop not found")
+    db.delete(crop)
+    db.commit()
+    return {"message": "Regional crop deleted"}
 
 
 @router.get("/camp-users", response_model=List[Any])
@@ -790,6 +890,75 @@ async def bulk_upload_crop_families(
             
     db.commit()
     return {"message": f"Successfully imported {count} crop families"}
+
+@router.post("/regional-crops/bulk-upload")
+async def bulk_upload_regional_crops(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Bulk upload regional crops from CSV (crop_name, region_name, family_name)."""
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only admins can bulk upload crops")
+    
+    if not file.filename.lower().endswith('.csv'):
+         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
+    import csv
+    import io
+
+    content = await file.read()
+    try:
+        decoded = content.decode('utf-8')
+    except UnicodeDecodeError:
+        decoded = content.decode('latin-1')
+    
+    f = io.StringIO(decoded)
+    reader = csv.DictReader(f)
+    
+    # Header Validation
+    expected_headers = ['crop_name', 'region_name']
+    if not all(h in (reader.fieldnames or []) for h in expected_headers):
+        raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+    
+    count = 0
+    for row in reader:
+        crop_name = row.get('crop_name', '').strip()
+        region_name = row.get('region_name', '').strip()
+        family_name = row.get('family_name', '').strip()
+        
+        if not crop_name or not region_name:
+            continue
+            
+        # Find region_id
+        region = db.query(Region).filter(Region.name == region_name).first()
+        if not region:
+            continue
+            
+        # Find family_id if family_name provided
+        family_id = None
+        if family_name:
+            family = db.query(CropFamily).filter(CropFamily.family_name == family_name).first()
+            if family:
+                family_id = family.id
+        
+        # Check if crop already exists in THIS region
+        existing = db.query(RegionalCrop).filter(
+            RegionalCrop.crop_name == crop_name, 
+            RegionalCrop.region_id == region.id
+        ).first()
+        
+        if existing:
+            if family_id:
+                existing.family_id = family_id
+            continue
+            
+        crop = RegionalCrop(crop_name=crop_name, region_id=region.id, family_id=family_id)
+        db.add(crop)
+        count += 1
+        
+    db.commit()
+    return {"message": f"Successfully imported {count} regional crops"}
 
 @router.post("/provinces/bulk-upload")
 async def bulk_upload_provinces(

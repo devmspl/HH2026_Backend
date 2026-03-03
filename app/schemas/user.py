@@ -15,6 +15,7 @@ class UserBase(BaseModel):
     phone: Optional[str] = None
     parent_id: Optional[int] = None
     avatar_url: Optional[str] = None
+    permissions: Optional[str] = None # JSON string of allowed menu IDs
 
 # Properties to receive via API on creation (strict email on input)
 class UserCreate(UserBase):

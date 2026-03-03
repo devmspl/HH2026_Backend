@@ -215,6 +215,7 @@ def create_agent(
         last_lng=agent_in.last_lng,
         location=agent_in.location,
         phone=agent_in.phone,
+        permissions=agent_in.permissions,
     )
     db.add(db_obj)
     db.commit()

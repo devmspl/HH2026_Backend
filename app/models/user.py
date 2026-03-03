@@ -39,6 +39,9 @@ class User(Base):
     is_deleted = Column(Boolean(), default=False)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     
+    # Permissions (JSON stored as text)
+    permissions = Column(Text, nullable=True)
+    
     # Approval Tracking
     approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
@@ -187,14 +190,15 @@ class CropFamily(Base):
     id = Column(Integer, primary_key=True, index=True)
     family_name = Column(String(255), nullable=False)
     label = Column(String(255), nullable=True)
-    picture = Column(String(500), nullable=True)
+    picture = Column(Text, nullable=True)
 
 class NationalCrop(Base):
     __tablename__ = "national_crops"
     id = Column(Integer, primary_key=True, index=True)
     crop_name = Column(String(255), nullable=False)
+    crop_id = Column(String(100), nullable=True)
     family_id = Column(Integer, ForeignKey("crop_families.id"))
-    picture = Column(String(500), nullable=True)
+    picture = Column(Text, nullable=True)
     
     family = relationship("CropFamily")
 
@@ -240,7 +244,7 @@ class RegionalCrop(Base):
     rcrop_id = Column(String(100), nullable=True) # External or code ID
     crop_name = Column(String(255), nullable=False)
     family_id = Column(Integer, ForeignKey("crop_families.id"))
-    picture = Column(String(500), nullable=True)
+    picture = Column(Text, nullable=True)
     
     region = relationship("Region")
     family = relationship("CropFamily")
@@ -307,6 +311,7 @@ class ChatMessage(Base):
 class Customer(Base):
     __tablename__ = "customers"
     id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(String(100), unique=True, index=True, nullable=True)
     full_name = Column(String(255), nullable=False)
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)

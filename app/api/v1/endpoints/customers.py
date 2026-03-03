@@ -11,6 +11,8 @@ from app.core.audit import log_action
 import csv
 import io
 import json
+import string
+import random
 
 router = APIRouter()
 
@@ -29,6 +31,7 @@ def _customer_to_dict(c: Customer) -> Dict[str, Any]:
 
 
 class CustomerCreate(BaseModel):
+    customer_id: Optional[str] = None
     full_name: str
     first_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -45,6 +48,7 @@ class CustomerCreate(BaseModel):
     province_id: Optional[int] = None
     membership_status: Optional[str] = None
     agent_id: Optional[int] = None
+    assigned_camp_user_id: Optional[int] = None
     household: Optional[str] = None
     education_level: Optional[str] = None
     emp_status: Optional[str] = None
@@ -106,12 +110,18 @@ def create_customer(
     if cnic_val is not None:
         data["cnic"] = cnic_val
     
-    # Auto-generate farmer_id if not provided
+    # Auto-generate IDs if not provided
+    if not data.get("customer_id"):
+        # Generate random 5-letter ID
+        while True:
+            cid = ''.join(random.choices(string.ascii_uppercase, k=5))
+            if not db.query(Customer).filter(Customer.customer_id == cid).first():
+                data["customer_id"] = cid
+                break
+                
     if not data.get("farmer_id"):
-        # Get the max existing farmer_id number
-        last_customer = db.query(Customer).order_by(Customer.id.desc()).first()
-        next_num = (last_customer.id + 1) if last_customer else 1
-        data["farmer_id"] = f"FRM-{next_num:06d}"
+        # Initial placeholder
+        data["farmer_id"] = "F-TEMP"
     
     try:
         customer = Customer(**data)
@@ -119,9 +129,9 @@ def create_customer(
         db.commit()
         db.refresh(customer)
         
-        # Update farmer_id with actual ID for uniqueness
-        if customer.farmer_id.startswith("FRM-"):
-            customer.farmer_id = f"FRM-{customer.id:06d}"
+        # Update farmer_id with actual ID
+        if customer.farmer_id == "F-TEMP":
+            customer.farmer_id = f"F{customer.id:04d}"
             db.commit()
             db.refresh(customer)
         log_action(db, current_user.id, "CREATE_CUSTOMER", f"Created customer {customer.full_name}")
@@ -226,25 +236,31 @@ async def bulk_upload_customers(
         f = io.StringIO(normalized_content)
         reader = csv.DictReader(f)
         
-        # Header Validation
-        expected_headers = ['full_name', 'phone', 'email', 'address', 'cnic', 'age', 'gender']
-        if not all(h in (reader.fieldnames or []) for h in expected_headers):
-            raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Expected columns: {', '.join(expected_headers)}")
+        # Header Validation (minimum headers)
+        required_headers = ['full_name']
+        actual_headers = [h.lower() for h in (reader.fieldnames or [])]
+        if not all(h in actual_headers for h in required_headers):
+            raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Missing: {', '.join([h for h in required_headers if h not in actual_headers])}")
 
         customers_count = 0
-        # Camp user cap
-        if current_user.role == UserRole.CAMP:
-            current_count = db.query(Customer).filter(
-                Customer.assigned_camp_user_id == current_user.id
-            ).count()
+        
+        # Prep sequential IDs
+        last_cust = db.query(Customer).order_by(Customer.id.desc()).first()
+        next_base_num = (last_cust.id + 1) if last_cust else 1
+        processed_count = 0
 
         for row in reader:
+            # Case-insensitive row access
+            row = {k.lower(): v for k, v in row.items()}
             # Skip empty rows
             if not any(row.values()):
                 continue
 
-            full_name = row.get('full_name', 'Unnamed').strip()
-            phone = row.get('phone', '').strip()
+            full_name = row.get('full_name', '').strip()
+            if not full_name:
+                continue
+
+            phone = row.get('phone', row.get('contact', '')).strip()
             cnic = row.get('cnic', '').strip()
 
             # Check if customer already exists by CNIC or (Name + Phone)
@@ -257,19 +273,57 @@ async def bulk_upload_customers(
                 if existing:
                     continue
 
+            def get_int(val):
+                if val and str(val).strip().isdigit():
+                    return int(val)
+                return None
+
             customer = Customer(
                 full_name=full_name,
+                first_name=row.get('first_name', row.get('first name', '')).strip(),
+                last_name=row.get('last_name', row.get('last name', '')).strip(),
                 phone=phone,
                 email=row.get('email', '').strip(),
                 address=row.get('address', '').strip(),
                 cnic=cnic,
-                age=int(row.get('age')) if row.get('age') and str(row.get('age')).isdigit() else None,
+                age=get_int(row.get('age')),
                 gender=row.get('gender', '').strip(),
-                category=category
+                category=category,
+                customer_id=row.get('customer_id', row.get('customerid', '')).strip() or None,
+                farmer_id=row.get('farmer_id', row.get('farmerid', '')).strip() or None,
+                camp_id=get_int(row.get('camp_id', row.get('campid'))),
+                region_id=get_int(row.get('region_id', row.get('regionid'))),
+                district_id=get_int(row.get('district_id', row.get('districtid'))),
+                province_id=get_int(row.get('province_id', row.get('provinceid'))),
+                membership_status=row.get('membership_status', row.get('membershipstatus', '')).strip(),
+                household=row.get('household', '').strip(),
+                education_level=row.get('education_level', row.get('educationlevel', '')).strip(),
+                emp_status=row.get('emp_status', row.get('empstatus', '')).strip(),
+                photo=row.get('photo', '').strip()
             )
+            
+            # Apply Camp User assignment
             if current_user.role == UserRole.CAMP:
                 customer.assigned_camp_user_id = current_user.id
+            else:
+                # If not CAMP user, maybe allow setting it from CSV
+                c_user_id = get_int(row.get('assigned_camp_user_id', row.get('camp_user_id')))
+                if c_user_id:
+                    customer.assigned_camp_user_id = c_user_id
+
+            if not customer.customer_id:
+                # Generate random 5-letter ID
+                while True:
+                    cid = ''.join(random.choices(string.ascii_uppercase, k=5))
+                    if not db.query(Customer).filter(Customer.customer_id == cid).first():
+                        customer.customer_id = cid
+                        break
+            
+            if not customer.farmer_id:
+                customer.farmer_id = f"F{next_base_num + processed_count:04d}"
+
             db.add(customer)
+            processed_count += 1
             customers_count += 1
         
         db.commit()

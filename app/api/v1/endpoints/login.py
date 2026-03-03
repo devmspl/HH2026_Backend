@@ -22,6 +22,7 @@ class LoginResponse(BaseModel):
     full_name: str
     role: str
     avatar_url: str | None = None
+    permissions: str | None = None
 
 @router.post("/login/access-token", response_model=LoginResponse)
 def login_access_token(
@@ -63,7 +64,8 @@ def login_access_token(
         "user_id": user.id,
         "full_name": user.full_name,
         "role": user.role,
-        "avatar_url": str(user.avatar_url) if user.avatar_url else None
+        "avatar_url": str(user.avatar_url) if user.avatar_url else None,
+        "permissions": user.permissions
     }
 
 @router.post("/login/test-token", response_model=user_schema.User)
