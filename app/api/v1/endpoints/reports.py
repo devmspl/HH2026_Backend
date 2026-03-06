@@ -199,8 +199,8 @@ def get_national_crop_report(
 
     # Pre-fetch NationalCrop IDs to fill missing ones in JSON
     from app.models.user import NationalCrop
-    crops_info = db.query(NationalCrop.crop_name, NationalCrop.crop_id).all()
-    id_map = {c.crop_name: c.crop_id for c in crops_info if c.crop_id}
+    crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
+    id_map = {c.crop_name: str(c.id) for c in crops_info}
 
     total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports, id_map)
     return general_schema.NationalCropReport(
@@ -228,8 +228,8 @@ def get_provincial_crop_report(
     reports = query.all()
 
     from app.models.user import NationalCrop
-    crops_info = db.query(NationalCrop.crop_name, NationalCrop.crop_id).all()
-    id_map = {c.crop_name: c.crop_id for c in crops_info if c.crop_id}
+    crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
+    id_map = {c.crop_name: str(c.id) for c in crops_info}
 
     total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports, id_map)
     return general_schema.NationalCropReport(
@@ -257,8 +257,8 @@ def get_district_crop_report(
     reports = query.all()
 
     from app.models.user import NationalCrop
-    crops_info = db.query(NationalCrop.crop_name, NationalCrop.crop_id).all()
-    id_map = {c.crop_name: c.crop_id for c in crops_info if c.crop_id}
+    crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
+    id_map = {c.crop_name: str(c.id) for c in crops_info}
 
     total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports, id_map)
     return general_schema.NationalCropReport(
@@ -286,8 +286,8 @@ def get_region_crop_report(
     reports = query.all()
 
     from app.models.user import NationalCrop
-    crops_info = db.query(NationalCrop.crop_name, NationalCrop.crop_id).all()
-    id_map = {c.crop_name: c.crop_id for c in crops_info if c.crop_id}
+    crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
+    id_map = {c.crop_name: str(c.id) for c in crops_info}
 
     total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports, id_map)
     return general_schema.NationalCropReport(
@@ -332,9 +332,16 @@ def get_regional_crops_tally(
     agg: Dict[Tuple[Optional[int], str, str, Optional[str]], Dict[str, Any]] = {}
 
     # Pre-fetch RegionalCrop IDs for fallback (Case-insensitive)
-    from app.models.user import RegionalCrop
-    rcrops_info = db.query(RegionalCrop.crop_name, RegionalCrop.rcrop_id).all()
-    id_map = {str(c.crop_name).strip().lower(): c.rcrop_id for c in rcrops_info if c.rcrop_id}
+    from app.models.user import RegionalCrop, NationalCrop
+    id_map = {}
+    
+    ncrops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
+    for c in ncrops_info:
+        id_map[str(c.crop_name).strip().lower()] = str(c.id)
+        
+    rcrops_info = db.query(RegionalCrop.crop_name, RegionalCrop.id).all()
+    for c in rcrops_info:
+        id_map[str(c.crop_name).strip().lower()] = str(c.id)
 
     for report in reports:
         if not report.survey_data:
