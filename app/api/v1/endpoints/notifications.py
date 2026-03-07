@@ -27,7 +27,7 @@ class NotificationSend(BaseModel):
 class ConfigSave(BaseModel):
     key: str # 'sms_settings' or 'push_settings'
     value: dict
-
+0
 @router.get("/templates")
 def get_templates(db: Session = Depends(get_db)):
     return db.query(NotificationTemplate).all()
@@ -46,11 +46,11 @@ def create_template(template: TemplateCreate, db: Session = Depends(get_db), cur
 @router.get("/logs")
 def get_logs(db: Session = Depends(get_db)):
     logs = db.query(NotificationLog).order_by(NotificationLog.timestamp.desc()).all()
-    # Format for frontend
     return [
         {
             "id": l.id,
             "recipient": l.recipient.full_name if l.recipient else f"User {l.recipient_id}",
+            "sent_by": l.sender.full_name if l.sender else "System",
             "type": l.type,
             "message": l.message,
             "status": l.status,
@@ -58,6 +58,60 @@ def get_logs(db: Session = Depends(get_db)):
         }
         for l in logs
     ]
+
+@router.get("/my")
+def get_my_notifications(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Get notifications for the currently logged-in user (agents see their own)."""
+    logs = (
+        db.query(NotificationLog)
+        .filter(NotificationLog.recipient_id == current_user.id)
+        .order_by(NotificationLog.timestamp.desc())
+        .all()
+    )
+    return [
+        {
+            "id": l.id,
+            "type": l.type,
+            "message": l.message,
+            "status": l.status,
+            "is_read": l.status == "read",
+            "sent_by": l.sender.full_name if l.sender else "System",
+            "created_at": l.timestamp,
+        }
+        for l in logs
+    ]
+
+@router.put("/my/{log_id}/read")
+def mark_notification_read(log_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Mark a notification as read."""
+    log = db.query(NotificationLog).filter(
+        NotificationLog.id == log_id,
+        NotificationLog.recipient_id == current_user.id
+    ).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    log.status = "read"
+    db.commit()
+    return {"message": "Marked as read"}
+
+@router.put("/my/read-all")
+def mark_all_notifications_read(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Mark all notifications of current user as read."""
+    db.query(NotificationLog).filter(
+        NotificationLog.recipient_id == current_user.id,
+        NotificationLog.status == "sent"
+    ).update({"status": "read"})
+    db.commit()
+    return {"message": "All notifications marked as read"}
+
+@router.get("/my/unread-count")
+def get_unread_count(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Get unread notification count for current user."""
+    count = db.query(NotificationLog).filter(
+        NotificationLog.recipient_id == current_user.id,
+        NotificationLog.status == "sent"
+    ).count()
+    return {"count": count}
 
 @router.post("/send")
 def send_notification(payload: NotificationSend, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -90,8 +144,11 @@ def send_notification(payload: NotificationSend, db: Session = Depends(get_db), 
 
     logs = []
     for user in target_users:
+        if user.id == current_user.id:
+            continue
         log = NotificationLog(
             recipient_id=user.id,
+            sender_id=current_user.id,   # track who sent it
             type=payload.type,
             message=payload.message,
             status="sent"

@@ -77,7 +77,7 @@ class User(Base):
 
     # Relationships
     reports = relationship("Report", back_populates="agent")
-    notifications = relationship("NotificationLog", back_populates="recipient")
+    notifications = relationship("NotificationLog", back_populates="recipient", foreign_keys="[NotificationLog.recipient_id]")
 
 class ReportStatus(str, enum.Enum):
     PENDING = "pending"
@@ -275,12 +275,14 @@ class NotificationLog(Base):
     __tablename__ = "notification_logs"
     id = Column(Integer, primary_key=True, index=True)
     recipient_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=True)   # who sent it
     type = Column(String(20), nullable=False) # sms, push
     message = Column(String, nullable=False)
-    status = Column(String(20), default="pending") # sent, failed, retry
+    status = Column(String(20), default="pending") # sent, read, failed
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     
-    recipient = relationship("User", back_populates="notifications")
+    recipient = relationship("User", back_populates="notifications", foreign_keys=[recipient_id])
+    sender   = relationship("User", foreign_keys=[sender_id])
 
 chat_group_members = Table(
     "chat_group_members",

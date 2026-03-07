@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.orm import Session
 from app.core.auth import get_current_user, RoleChecker
 from app.db.session import get_db
-from app.models.user import User, Survey, SurveyStatus, SurveyType, UserRole
+from app.models.user import User, Survey, SurveyStatus, SurveyType, UserRole, NotificationLog
 from app.schemas.user import SurveyOut, SurveyCreate, SurveyUpdate
 import csv
 import io
@@ -11,6 +11,18 @@ import io
 from app.core.audit import log_action
 
 router = APIRouter()
+
+def _notify_assigned_agents(db: Session, survey: Survey, agent_ids: List[int], message: str):
+    """Send an in-app notification to the list of agent IDs."""
+    for uid in agent_ids:
+        log = NotificationLog(
+            recipient_id=uid,
+            type="push",
+            message=message,
+            status="sent"
+        )
+        db.add(log)
+    db.flush()  # flush within the same transaction
 
 @router.get("/", response_model=List[SurveyOut])
 def get_surveys(
@@ -88,8 +100,20 @@ def create_survey(
         db.add(survey)
         db.commit()
         db.refresh(survey)
-        
-        survey_out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
+
+        # Notify assigned agents about the new survey
+        assigned_ids = [u.id for u in survey.target_users]
+        if assigned_ids:
+            notify_msg = (
+                f"📋 New Survey Assigned: '{survey.name}'\n"
+                f"Type: {survey.form_type}\n"
+                f"Description: {survey.description or 'N/A'}\n"
+                f"Please complete this survey as instructed."
+            )
+            _notify_assigned_agents(db, survey, assigned_ids, notify_msg)
+            db.commit()
+
+        survey_out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": assigned_ids})
         log_action(db, current_user.id, "CREATE_SURVEY", f"Created {survey.form_type} '{survey.name}'")
         return survey_out
     except Exception as e:
@@ -121,7 +145,24 @@ def launch_survey(
     survey.status = SurveyStatus.ACTIVE
     db.commit()
     db.refresh(survey)
-    
+
+    # Notify all assigned agents (or all agents if target is All)
+    from app.models.user import TargetRespondents
+    if survey.target_respondents == TargetRespondents.ALL:
+        all_agent_ids = [u.id for u in db.query(User).filter(User.role == UserRole.AGENT).all()]
+        notify_targets = all_agent_ids
+    else:
+        notify_targets = [u.id for u in survey.target_users]
+
+    if notify_targets:
+        launch_msg = (
+            f"🚀 Survey Launched: '{survey.name}' is now ACTIVE!\n"
+            f"Type: {survey.form_type}\n"
+            f"Please log in and complete your survey submission as soon as possible."
+        )
+        _notify_assigned_agents(db, survey, notify_targets, launch_msg)
+        db.commit()
+
     log_action(db, current_user.id, "LAUNCH_SURVEY", f"Launched survey '{survey.name}' (ID: {survey_id})")
     return SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
 
@@ -200,8 +241,19 @@ def update_survey(
         
     db.commit()
     db.refresh(survey)
-    
-    survey_out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
+
+    # Notify newly assigned agents about survey update
+    updated_agent_ids = [u.id for u in survey.target_users]
+    if updated_agent_ids:
+        update_msg = (
+            f"📝 Survey Updated: '{survey.name}' has been updated and you are assigned to it.\n"
+            f"Type: {survey.form_type}\n"
+            f"Please review the updated survey details and complete your submission."
+        )
+        _notify_assigned_agents(db, survey, updated_agent_ids, update_msg)
+        db.commit()
+
+    survey_out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": updated_agent_ids})
     log_action(db, current_user.id, "UPDATE_SURVEY", f"Updated survey '{survey.name}' (ID: {survey_id})")
     return survey_out
 
