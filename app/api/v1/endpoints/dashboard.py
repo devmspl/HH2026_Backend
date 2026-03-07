@@ -31,13 +31,26 @@ def get_dashboard_stats(
     # Weekly Submission Trend
     from datetime import datetime, timedelta
     trend = []
+    now = datetime.now()
     for i in range(6, -1, -1):
-        date = datetime.now() - timedelta(days=i)
-        count = db.query(Report).filter(func.date(Report.created_at) == date.date()).count()
-        trend.append({"date": date.strftime("%a"), "count": count})
+        target_date = (now - timedelta(days=i)).date()
+        # Use >= and < for more reliable date filtering across different DBs
+        next_day = target_date + timedelta(days=1)
+        count = db.query(Report).filter(
+            Report.created_at >= target_date,
+            Report.created_at < next_day
+        ).count()
+        trend.append({"date": target_date.strftime("%a"), "count": count})
 
     recent_notifs = db.query(NotificationLog).order_by(NotificationLog.timestamp.desc()).limit(5).all()
-    notifs_list = [{"message": n.message, "time": n.timestamp.isoformat(), "status": n.status} for n in recent_notifs]
+    notifs_list = []
+    for n in recent_notifs:
+        time_str = n.timestamp.isoformat() if n.timestamp else now.isoformat()
+        notifs_list.append({
+            "message": n.message or "No message",
+            "time": time_str,
+            "status": n.status or "unknown"
+        })
     
     return {
         "total_agents": total_agents,
