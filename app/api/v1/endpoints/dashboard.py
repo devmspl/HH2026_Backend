@@ -29,28 +29,36 @@ def get_dashboard_stats(
     rejected_reports = db.query(Report).filter(Report.status == "rejected").count()
 
     # Weekly Submission Trend
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, time
     trend = []
     now = datetime.now()
-    for i in range(6, -1, -1):
-        target_date = (now - timedelta(days=i)).date()
-        # Use >= and < for more reliable date filtering across different DBs
-        next_day = target_date + timedelta(days=1)
-        count = db.query(Report).filter(
-            Report.created_at >= target_date,
-            Report.created_at < next_day
-        ).count()
-        trend.append({"date": target_date.strftime("%a"), "count": count})
+    try:
+        for i in range(6, -1, -1):
+            target_date = (now - timedelta(days=i)).date()
+            # Convert to full datetime objects for Postgres compatibility
+            start_dt = datetime.combine(target_date, time.min)
+            end_dt = datetime.combine(target_date, time.max)
+            
+            count = db.query(Report).filter(
+                Report.created_at >= start_dt,
+                Report.created_at <= end_dt
+            ).count()
+            trend.append({"date": target_date.strftime("%a"), "count": count})
+    except Exception as e:
+        print(f"Error calculating trend: {str(e)}")
+        trend = [{"date": "N/A", "count": 0} for _ in range(7)]
 
-    recent_notifs = db.query(NotificationLog).order_by(NotificationLog.timestamp.desc()).limit(5).all()
     notifs_list = []
-    for n in recent_notifs:
-        time_str = n.timestamp.isoformat() if n.timestamp else now.isoformat()
-        notifs_list.append({
-            "message": n.message or "No message",
-            "time": time_str,
-            "status": n.status or "unknown"
-        })
+    try:
+        raw_notifs = db.query(NotificationLog).order_by(NotificationLog.timestamp.desc()).limit(5).all()
+        for n in raw_notifs:
+            notifs_list.append({
+                "message": str(n.message) if n.message else "Notification",
+                "time": n.timestamp.isoformat() if n.timestamp else now.isoformat(),
+                "status": n.status or "sent"
+            })
+    except Exception as e:
+        print(f"Error fetching notifications: {str(e)}")
     
     return {
         "total_agents": total_agents,
