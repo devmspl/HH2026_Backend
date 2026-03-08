@@ -21,6 +21,14 @@ class AccountStatus(str, enum.Enum):
     REJECTED = "rejected"
     DEACTIVATED = "deactivated"
 
+class SystemRole(Base):
+    __tablename__ = "system_roles"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), unique=True, nullable=False)
+    permissions = Column(Text, nullable=True) # JSON stored as text
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 class User(Base):
     __tablename__ = "users"
 
@@ -30,6 +38,10 @@ class User(Base):
     full_name = Column(String(255))
     role = Column(Enum(UserRole), default=UserRole.AGENT, nullable=False)
     
+    # Dynamic Role
+    role_id = Column(Integer, ForeignKey("system_roles.id"), nullable=True)
+    system_role = relationship("SystemRole", backref="users")
+
     # Status
     is_active = Column(Boolean(), default=True)
     is_superuser = Column(Boolean(), default=False)
@@ -39,7 +51,7 @@ class User(Base):
     is_deleted = Column(Boolean(), default=False)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     
-    # Permissions (JSON stored as text)
+    # Permissions (JSON stored as text - Fallback or additional)
     permissions = Column(Text, nullable=True)
     
     # Approval Tracking

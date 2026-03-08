@@ -43,12 +43,35 @@ def read_agents(
     # Exclude deleted by default in main list
     query = query.filter(User.is_deleted == False)
     
-    # Role-based filtering
-    # 1. Get all roles that are <= current user level
-    allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level <= current_level]
+    # Hierarchy filtering logic
+    is_admin = current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
     
-    # 2. Apply filter
-    query = query.filter(User.role.in_(allowed_roles))
+    if is_admin:
+        # Admins see all roles <= current user level
+        allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level <= current_level]
+        query = query.filter(User.role.in_(allowed_roles))
+        # Exclude SUPER_ADMIN from the visible list for everyone (even super admins see others but maybe not themselves/peers to keep it clean)
+        query = query.filter(User.role != UserRole.SUPER_ADMIN)
+    else:
+        # Non-admins only see their recursive subordinates
+        to_process = [current_user.id]
+        sub_ids = []
+        processed = {current_user.id}
+        
+        while to_process:
+            pid = to_process.pop()
+            subs = db.query(User.id).filter(User.parent_id == pid, User.is_deleted == False).all()
+            for s in subs:
+                sid = s[0]
+                if sid not in processed:
+                    sub_ids.append(sid)
+                    to_process.append(sid)
+                    processed.add(sid)
+        
+        if not sub_ids:
+            return [] # No subordinates
+            
+        query = query.filter(User.id.in_(sub_ids))
     
     # 3. Apply pagination
     users = query.offset(skip).limit(limit).all()
@@ -216,6 +239,7 @@ def create_agent(
         location=agent_in.location,
         phone=agent_in.phone,
         permissions=agent_in.permissions,
+        role_id=agent_in.role_id,
     )
     db.add(db_obj)
     db.commit()
@@ -227,21 +251,27 @@ def create_agent(
 
 @router.get("/creatable-roles")
 def get_creatable_roles_endpoint(
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """
     Get list of roles that the current user can create.
     """
+    from app.models.user import SystemRole
     current_level = get_role_level(current_user.role)
     # User can create roles <= their own level
     creatable = [role.value for role, level in ROLE_HIERARCHY.items() if level <= current_level]
     
-    # Sort them for display (High to low or low to high)
-    # Sorting logic if needed
+    # Get dynamic roles
+    system_roles = db.query(SystemRole).all()
     
     return {
         "user_role": current_user.role.value,
-        "creatable_roles": creatable
+        "creatable_roles": creatable,
+        "system_roles": [
+            {"id": sr.id, "name": sr.name, "permissions": sr.permissions} 
+            for sr in system_roles
+        ]
     }
 
 @router.put("/{agent_id}", response_model=user_schema.User)
@@ -441,9 +471,34 @@ def read_deleted_agents(
     # Base query
     query = db.query(User).filter(User.is_deleted == True)
     
-    # Role-based filtering
-    allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level <= current_level]
-    query = query.filter(User.role.in_(allowed_roles))
+    # Hierarchy filtering logic
+    is_admin = current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
+    
+    if is_admin:
+        allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level <= current_level]
+        query = query.filter(User.role.in_(allowed_roles))
+        query = query.filter(User.role != UserRole.SUPER_ADMIN)
+    else:
+        # Check recursive subordinates for non-admins
+        to_process = [current_user.id]
+        sub_ids = []
+        processed = {current_user.id}
+        while to_process:
+            pid = to_process.pop()
+            # Note: We check subordinates even if they are NOT deleted yet to find their deleted children, 
+            # but actually parent-child links might be broken if parent is deleted? 
+            # Standard logic: show anyone who was created by me/my team.
+            subs = db.query(User.id).filter(User.parent_id == pid).all()
+            for s in subs:
+                sid = s[0]
+                if sid not in processed:
+                    sub_ids.append(sid)
+                    to_process.append(sid)
+                    processed.add(sid)
+        
+        if not sub_ids:
+            return []
+        query = query.filter(User.id.in_(sub_ids))
     
     users = query.offset(skip).limit(limit).all()
         

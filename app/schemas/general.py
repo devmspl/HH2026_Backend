@@ -147,8 +147,8 @@ class NationalCropRow(BaseModel):
     yield_tonnes: float
     active_customers: Optional[int] = None
     participating_customers: Optional[int] = None
-    percent_participation: Optional[float] = None
-    percent_active: Optional[float] = None
+    percent_of_pcustomers: Optional[float] = None # % of Participating Customers
+    percent_of_acustomers: Optional[float] = None # % of Active Customers
 
 
 class NationalCropFamilyPie(BaseModel):
@@ -160,8 +160,8 @@ class NationalCropFamilyPie(BaseModel):
     total_spoiled_responses: int
     active_customers: Optional[int] = None
     participating_customers: Optional[int] = None
-    percent_participation: Optional[float] = None
-    percent_active: Optional[float] = None
+    percent_of_pcustomers: Optional[float] = None
+    percent_of_acustomers: Optional[float] = None
 
 
 class NationalCropReport(BaseModel):
@@ -187,8 +187,8 @@ class RegionalCropTallyRow(BaseModel):
     yield_tonnes: float
     active_customers: Optional[int] = None
     participating_customers: Optional[int] = None
-    percent_participation: Optional[float] = None
-    percent_active: Optional[float] = None
+    percent_of_pcustomers: Optional[float] = None
+    percent_of_acustomers: Optional[float] = None
 
 
 class RegionalCropTallyReport(BaseModel):
@@ -197,3 +197,29 @@ class RegionalCropTallyReport(BaseModel):
     participating_farmers: int
     spoiled_responses: int
     rows: List[RegionalCropTallyRow]
+
+class TopFamilyRankRow(BaseModel):
+    family_name: str
+    province_count: int
+    provinces: List[str]
+
+class TopFamilyRankResponse(BaseModel):
+    rows: List[TopFamilyRankRow]
+
+class ProvinceDominance(BaseModel):
+    province_id: int
+    province_name: str
+    dominant_family_name: str
+    yield_tonnes: float
+
+class RegionDominance(BaseModel):
+    region_id: int
+    region_name: str
+    district_name: str
+    province_name: str
+    dominant_family_name: str
+    yield_tonnes: float
+
+class DominantCropMapResponse(BaseModel):
+    by_province: List[ProvinceDominance]
+    by_region: List[RegionDominance]

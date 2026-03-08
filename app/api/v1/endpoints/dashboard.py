@@ -18,15 +18,58 @@ def get_dashboard_stats(
     """
     Get dashboard KPIs.
     """
-    total_agents = db.query(User).count()
-    active_agents = db.query(User).filter(User.is_active == True).count()
-    inactive_agents = total_agents - active_agents
-    total_reports = db.query(Report).count()
+    from sqlalchemy import or_
     
-    # Report Status Breakdown
-    pending_reports = db.query(Report).filter(Report.status == "pending").count()
-    approved_reports = db.query(Report).filter(Report.status == "approved").count()
-    rejected_reports = db.query(Report).filter(Report.status == "rejected").count()
+    # Hierarchy filtering logic
+    # Treat as admin if they have admin roles OR are a superuser
+    user_role_str = str(current_user.role)
+    is_admin = current_user.is_superuser or user_role_str in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE"]
+    
+    if is_admin:
+        # Admins see everything
+        user_ids_in_hierarchy = None
+    else:
+        # Others see themselves + their recursive subordinates
+        user_ids_in_hierarchy = [current_user.id]
+        to_process = [current_user.id]
+        processed = {current_user.id}
+        
+        while to_process:
+            pid = to_process.pop()
+            subs = db.query(User.id).filter(User.parent_id == pid, User.is_deleted == False).all()
+            for s in subs:
+                sid = s[0]
+                if sid not in processed:
+                    user_ids_in_hierarchy.append(sid)
+                    to_process.append(sid)
+                    processed.add(sid)
+
+    # Common report filter
+    report_q = db.query(Report)
+    
+    if user_ids_in_hierarchy is not None:
+        # Non-admin metrics
+        # Total Agents = people in hierarchy EXCEPT current user
+        managed_user_ids = [uid for uid in user_ids_in_hierarchy if uid != current_user.id]
+        
+        total_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False).count()
+        active_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False, User.is_active == True).count()
+        
+        # Reports = from anyone in hierarchy (including me)
+        report_q = report_q.filter(Report.agent_id.in_(user_ids_in_hierarchy))
+    else:
+        # Admin metrics
+        # Total Agents = all agents except SUPER_ADMINs
+        total_agents = db.query(User).filter(User.is_deleted == False, User.is_superuser == False).count()
+        active_agents = db.query(User).filter(User.is_deleted == False, User.is_superuser == False, User.is_active == True).count()
+
+    inactive_agents = total_agents - active_agents
+    
+    # Report Metrics counts
+    pending_reports = report_q.filter(Report.status == "pending").count()
+    approved_reports = report_q.filter(Report.status == "approved").count()
+    rejected_reports = report_q.filter(Report.status == "rejected").count()
+    total_reports = report_q.count()
 
     # Weekly Submission Trend
     from datetime import datetime, timedelta, time
@@ -35,31 +78,30 @@ def get_dashboard_stats(
     try:
         for i in range(6, -1, -1):
             target_date = (now - timedelta(days=i)).date()
-            # Convert to full datetime objects for Postgres compatibility
             start_dt = datetime.combine(target_date, time.min)
             end_dt = datetime.combine(target_date, time.max)
-            
-            count = db.query(Report).filter(
-                Report.created_at >= start_dt,
-                Report.created_at <= end_dt
-            ).count()
+            count = report_q.filter(Report.created_at >= start_dt, Report.created_at <= end_dt).count()
             trend.append({"date": target_date.strftime("%a"), "count": count})
-    except Exception as e:
-        print(f"Error calculating trend: {str(e)}")
+    except Exception:
         trend = [{"date": "N/A", "count": 0} for _ in range(7)]
 
+    # Notifications visibility
     notifs_list = []
     try:
-        raw_notifs = db.query(NotificationLog).order_by(NotificationLog.timestamp.desc()).limit(5).all()
+        notif_q = db.query(NotificationLog)
+        if user_ids_in_hierarchy is not None:
+            # Non-admins only see notifications where they are the recipient
+            notif_q = notif_q.filter(NotificationLog.recipient_id == current_user.id)
+            
+        raw_notifs = notif_q.order_by(NotificationLog.timestamp.desc()).limit(5).all()
         for n in raw_notifs:
             notifs_list.append({
                 "message": str(n.message) if n.message else "Notification",
                 "time": n.timestamp.isoformat() if n.timestamp else now.isoformat(),
                 "status": n.status or "sent"
             })
-    except Exception as e:
-        print(f"Error fetching notifications: {str(e)}")
-    
+    except Exception:
+        pass
     return {
         "total_agents": total_agents,
         "active_agents": active_agents,

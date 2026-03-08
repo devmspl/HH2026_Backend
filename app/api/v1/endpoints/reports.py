@@ -58,18 +58,27 @@ def _aggregate_national_crop_reports(
 
     for (crop_name, family_name, crop_id), metrics in crop_agg.items():
         yield_tonnes = metrics["yield_tonnes"]
-        percent_participation = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
-        percent_active = (active_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+        # If per-crop participation isn't in data, use report-level participation for now
+        # Ideally, 'crops' array in survey_data should have 'participating_farmers'
+        
+        # Percentage of Participating Customers who grew this crop (if available, else 100%)
+        # Here we use report-level as fallback
+        p_cust = participating_customers_total
+        a_cust = active_customers_total
+        
+        pct_of_p = (p_cust / participating_customers_total * 100.0) if participating_customers_total > 0 else 0
+        pct_of_a = (p_cust / active_customers_total * 100.0) if active_customers_total > 0 else 0
+
         rows.append(
             general_schema.NationalCropRow(
                 crop_id=crop_id,
                 crop_name=crop_name,
                 family_name=family_name,
                 yield_tonnes=yield_tonnes,
-                active_customers=active_customers_total if active_customers_total > 0 else None,
-                participating_customers=participating_customers_total if participating_customers_total > 0 else None,
-                percent_participation=percent_participation,
-                percent_active=percent_active,
+                active_customers=a_cust if a_cust > 0 else None,
+                participating_customers=p_cust if p_cust > 0 else None,
+                percent_of_pcustomers=pct_of_p,
+                percent_of_acustomers=pct_of_a,
             )
         )
         fam = families_map.setdefault(family_name, {"total_yield_tonnes": 0.0, "total_spoiled_responses": 0.0})
@@ -78,8 +87,8 @@ def _aggregate_national_crop_reports(
 
     families: List[general_schema.NationalCropFamilyPie] = []
     for family_name, metrics in families_map.items():
-        percent_participation = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
-        percent_active = (active_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+        pct_of_p = (participating_customers_total / participating_customers_total * 100.0) if participating_customers_total > 0 else 0
+        pct_of_a = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else 0
         families.append(
             general_schema.NationalCropFamilyPie(
                 family_name=family_name,
@@ -87,8 +96,8 @@ def _aggregate_national_crop_reports(
                 total_spoiled_responses=int(metrics["total_spoiled_responses"]),
                 active_customers=active_customers_total if active_customers_total > 0 else None,
                 participating_customers=participating_customers_total if participating_customers_total > 0 else None,
-                percent_participation=percent_participation,
-                percent_active=percent_active,
+                percent_of_pcustomers=pct_of_p,
+                percent_of_acustomers=pct_of_a,
             )
         )
     return total_farmers, participating_farmers, spoiled_responses, rows, families
@@ -401,6 +410,8 @@ def get_regional_crops_tally(
 
     rows: List[general_schema.RegionalCropTallyRow] = []
     for (rid, crop_name, family_name, crop_id), metrics in agg.items():
+        pct_of_p = (participating_customers_total / participating_customers_total * 100.0) if participating_customers_total > 0 else 0
+        pct_of_a = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else 0
         rows.append(
             general_schema.RegionalCropTallyRow(
                 rcrop_id=crop_id,
@@ -412,8 +423,8 @@ def get_regional_crops_tally(
                 yield_tonnes=metrics["yield_tonnes"],
                 active_customers=active_customers_total if active_customers_total > 0 else None,
                 participating_customers=participating_customers_total if participating_customers_total > 0 else None,
-                percent_participation=percent_participation,
-                percent_active=percent_active,
+                percent_of_pcustomers=pct_of_p,
+                percent_of_acustomers=pct_of_a,
             )
         )
 
@@ -824,4 +835,142 @@ def delete_report(
     
     log_action(db, current_user.id, "DELETE_REPORT", f"Deleted report {conf_no}")
     
+    
     return {"message": "Report deleted successfully"}
+
+@router.get("/crops/top-family-by-province", response_model=general_schema.TopFamilyRankResponse)
+def get_top_family_by_province(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns which crop family is top (by yield) in how many provinces.
+    Used for 'Regional Crop Graph by Family'.
+    """
+    from app.models.user import Province # Assuming Province model is here or available
+    provinces = db.query(Province).all()
+    
+    family_stats = {}
+    
+    for province in provinces:
+        reports = db.query(Report).filter(
+            Report.province_id == province.id,
+            Report.status == "approved"
+        ).all()
+        
+        if not reports:
+            continue
+            
+        family_yields = {} 
+        for report in reports:
+            if not report.survey_data:
+                continue
+            try:
+                data = json.loads(report.survey_data)
+            except:
+                continue
+                
+            if "crops" not in data:
+                continue
+            
+            for crop_obj in data["crops"]:
+                f_name = crop_obj.get("family_name") or "Other"
+                f_yield = float(crop_obj.get("yield_tonnes") or 0)
+                family_yields[f_name] = family_yields.get(f_name, 0) + f_yield
+        
+        if not family_yields:
+            continue
+            
+        top_family = max(family_yields.items(), key=lambda x: x[1])[0]
+        
+        if top_family not in family_stats:
+            family_stats[top_family] = {"province_count": 0, "provinces": []}
+        
+        family_stats[top_family]["province_count"] += 1
+        family_stats[top_family]["provinces"].append(province.name)
+        
+    rows = []
+    for f_name, stats in family_stats.items():
+        rows.append({
+            "family_name": f_name,
+            "province_count": stats["province_count"],
+            "provinces": stats["provinces"]
+        })
+    
+    rows.sort(key=lambda x: x["province_count"], reverse=True)
+    return {"rows": rows}
+
+@router.get("/crops/dominant-map", response_model=general_schema.DominantCropMapResponse)
+def get_dominant_crop_map(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns dominant family for each province and region by yield.
+    Used for 'GIS Domination Map'.
+    """
+    from app.models.user import Province, Region # Assuming they are in models.user or similar
+    
+    # 1. By Province
+    provinces = db.query(Province).all()
+    by_province = []
+    for prov in provinces:
+        reports = db.query(Report).filter(
+            Report.province_id == prov.id,
+            Report.status == "approved"
+        ).all()
+        if not reports: continue
+        
+        family_yields = {}
+        for report in reports:
+            if not report.survey_data: continue
+            try:
+                data = json.loads(report.survey_data)
+                for crop in data.get("crops", []):
+                    f_name = crop.get("family_name") or "Other"
+                    f_yield = float(crop.get("yield_tonnes") or 0)
+                    family_yields[f_name] = family_yields.get(f_name, 0) + f_yield
+            except: continue
+        
+        if family_yields:
+            top_f = max(family_yields.items(), key=lambda x: x[1])
+            by_province.append({
+                "province_id": prov.id,
+                "province_name": prov.name,
+                "dominant_family_name": top_f[0],
+                "yield_tonnes": top_f[1]
+            })
+
+    # 2. By Region
+    regions = db.query(Region).all()
+    by_region = []
+    for reg in regions:
+        reports = db.query(Report).filter(
+            Report.region_id == reg.id,
+            Report.status == "approved"
+        ).all()
+        if not reports: continue
+        
+        family_yields = {}
+        for report in reports:
+            if not report.survey_data: continue
+            try:
+                data = json.loads(report.survey_data)
+                for crop in data.get("crops", []):
+                    f_name = crop.get("family_name") or "Other"
+                    f_yield = float(crop.get("yield_tonnes") or 0)
+                    family_yields[f_name] = family_yields.get(f_name, 0) + f_yield
+            except: continue
+            
+        if family_yields:
+            top_f = max(family_yields.items(), key=lambda x: x[1])
+            by_region.append({
+                "region_id": reg.id,
+                "region_name": reg.name,
+                "district_name": reg.district.name if reg.district else "-",
+                "province_name": reg.province.name if reg.province else "-",
+                "dominant_family_name": top_f[0],
+                "yield_tonnes": top_f[1]
+            })
+            
+    return {"by_province": by_province, "by_region": by_region}

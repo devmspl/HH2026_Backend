@@ -56,6 +56,11 @@ def login_access_token(
     # Debug log to check avatar_url
     print(f"DEBUG: User avatar_url: {user.avatar_url}")
     
+    # Inherit permissions from role if individual permissions are missing
+    effective_permissions = user.permissions
+    if not effective_permissions and user.system_role:
+        effective_permissions = user.system_role.permissions
+        
     return {
         "access_token": security.create_access_token(
             user.id, expires_delta=access_token_expires
@@ -65,7 +70,7 @@ def login_access_token(
         "full_name": user.full_name,
         "role": user.role,
         "avatar_url": str(user.avatar_url) if user.avatar_url else None,
-        "permissions": user.permissions
+        "permissions": effective_permissions
     }
 
 @router.post("/login/test-token", response_model=user_schema.User)

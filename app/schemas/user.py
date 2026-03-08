@@ -3,12 +3,15 @@ from pydantic import BaseModel, EmailStr, ConfigDict
 from app.models.user import UserRole
 from datetime import datetime
 
+from .role import Role
+
 # Shared properties (email as str on output so any DB value e.g. *@seed.local is accepted)
 class UserBase(BaseModel):
     email: Optional[str] = None
     is_active: Optional[bool] = True
     full_name: Optional[str] = None
     role: Optional[UserRole] = UserRole.AGENT
+    role_id: Optional[int] = None
     last_lat: Optional[float] = None
     last_lng: Optional[float] = None
     location: Optional[str] = None
@@ -39,6 +42,7 @@ class User(UserInDBBase):
     approved_by: Optional[int] = None
     approved_at: Optional[datetime] = None
     approver_details: Optional[dict] = None  # Will contain {id, full_name, role, avatar_url}
+    system_role: Optional[Role] = None
 
 # Additional properties stored in DB
 class UserInDB(UserInDBBase):
