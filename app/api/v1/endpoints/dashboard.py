@@ -20,16 +20,14 @@ def get_dashboard_stats(
     """
     from sqlalchemy import or_
     
-    # Hierarchy filtering logic
-    # Treat as admin if they have admin roles OR are a superuser
-    user_role_str = str(current_user.role)
-    is_admin = current_user.is_superuser or user_role_str in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE"]
+    # Hierarchy and Location filtering logic
+    is_admin = current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
+    is_executive = current_user.role == UserRole.EXECUTIVE
     
-    if is_admin:
-        # Admins see everything
-        user_ids_in_hierarchy = None
-    else:
-        # Others see themselves + their recursive subordinates
+    user_ids_in_hierarchy = None
+    
+    if not is_admin:
+        # 1. Start with recursive subordinates
         user_ids_in_hierarchy = [current_user.id]
         to_process = [current_user.id]
         processed = {current_user.id}
@@ -44,18 +42,33 @@ def get_dashboard_stats(
                     to_process.append(sid)
                     processed.add(sid)
 
+        # 2. Add location-based users (anyone in the same Province/District/Region/Camp)
+        # This ensures a CAMP user sees all agents in their camp, even if not directly their children
+        loc_filters = []
+        if current_user.camp_id: loc_filters.append(User.camp_id == current_user.camp_id)
+        elif current_user.region_id: loc_filters.append(User.region_id == current_user.region_id)
+        elif current_user.district_id: loc_filters.append(User.district_id == current_user.district_id)
+        elif current_user.province_id: loc_filters.append(User.province_id == current_user.province_id)
+        
+        if loc_filters and not is_executive:
+             loc_users = db.query(User.id).filter(or_(*loc_filters), User.is_deleted == False).all()
+             for u in loc_users:
+                 if u[0] not in processed:
+                     user_ids_in_hierarchy.append(u[0])
+                     processed.add(u[0])
+
     # Common report filter
     report_q = db.query(Report)
     
-    if user_ids_in_hierarchy is not None:
+    if not is_admin:
         # Non-admin metrics
-        # Total Agents = people in hierarchy EXCEPT current user
+        # Managed Agents = people in hierarchy/location EXCEPT current user
         managed_user_ids = [uid for uid in user_ids_in_hierarchy if uid != current_user.id]
         
-        total_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False).count()
-        active_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False, User.is_active == True).count()
+        total_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False).count() if managed_user_ids else 0
+        active_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False, User.is_active == True).count() if managed_user_ids else 0
         
-        # Reports = from anyone in hierarchy (including me)
+        # Reports = from anyone in my scope (including me)
         report_q = report_q.filter(Report.agent_id.in_(user_ids_in_hierarchy))
     else:
         # Admin metrics
@@ -96,9 +109,13 @@ def get_dashboard_stats(
         raw_notifs = notif_q.order_by(NotificationLog.timestamp.desc()).limit(5).all()
         for n in raw_notifs:
             notifs_list.append({
+                "id": n.id,
+                "title": n.title or "Notification",
                 "message": str(n.message) if n.message else "Notification",
+                "icon": n.icon or "Notifications",
                 "time": n.timestamp.isoformat() if n.timestamp else now.isoformat(),
-                "status": n.status or "sent"
+                "status": n.status or "sent",
+                "is_read": n.is_read or n.status == "read"
             })
     except Exception:
         pass

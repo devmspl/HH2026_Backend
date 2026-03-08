@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from app.core.auth import get_current_user
 from app.db.session import get_db
-from app.models.user import User, UserRole, Province, District, Region, Camp, RegionalCrop, CropFamily, NationalCrop
+from app.models.user import User, UserRole, Province, District, Region, Camp, RegionalCrop, CropFamily, NationalCrop, Customer
 
 router = APIRouter()
 
@@ -62,11 +62,13 @@ class ProvinceUpdate(BaseModel):
 class DistrictCreate(BaseModel):
     name: str
     province_id: int
+    district_type: Optional[str] = None
     main_crop_family_id: Optional[int] = None
 
 class DistrictUpdate(BaseModel):
     name: Optional[str] = None
     province_id: Optional[int] = None
+    district_type: Optional[str] = None
     main_crop_family_id: Optional[int] = None
 
 # Region schemas
@@ -74,12 +76,14 @@ class RegionCreate(BaseModel):
     name: str
     district_id: int
     province_id: Optional[int] = None
+    region_type: Optional[str] = None
     main_crop_family_id: Optional[int] = None
 
 class RegionUpdate(BaseModel):
     name: Optional[str] = None
     district_id: Optional[int] = None
     province_id: Optional[int] = None
+    region_type: Optional[str] = None
     main_crop_family_id: Optional[int] = None
 
 # Camp schemas
@@ -88,12 +92,14 @@ class CampCreate(BaseModel):
     region_id: int
     district_id: Optional[int] = None
     province_id: Optional[int] = None
+    camp_type: Optional[str] = None
 
 class CampUpdate(BaseModel):
     name: Optional[str] = None
     region_id: Optional[int] = None
     district_id: Optional[int] = None
     province_id: Optional[int] = None
+    camp_type: Optional[str] = None
 
 
 # ==================== Crop Families CRUD ====================
@@ -276,9 +282,19 @@ def list_provinces(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    """List all provinces (id, name) for dropdowns."""
-    rows = db.query(Province).order_by(Province.name).all()
-    return [{"id": p.id, "name": p.name} for p in rows]
+    """List all provinces (id, name, total_customers, main_crop_family_name) for dropdowns and management."""
+    rows = db.query(Province).options(joinedload(Province.main_crop_family)).order_by(Province.name).all()
+    result = []
+    for p in rows:
+        count = db.query(Customer).filter(Customer.province_id == p.id).count()
+        result.append({
+            "id": p.id, 
+            "name": p.name, 
+            "total_customers": count,
+            "main_crop_family_id": p.main_crop_family_id,
+            "main_crop_family_name": p.main_crop_family.family_name if p.main_crop_family else None
+        })
+    return result
 
 
 @router.get("/districts", response_model=List[Any])
@@ -287,12 +303,24 @@ def list_districts(
     current_user: User = Depends(get_current_user),
     province_id: Optional[int] = None,
 ) -> Any:
-    """List districts; optional filter by province_id."""
-    query = db.query(District).order_by(District.name)
+    """List districts; optional filter by province_id. Returns customer counts and main crop family."""
+    query = db.query(District).options(joinedload(District.main_crop_family)).order_by(District.name)
     if province_id is not None:
         query = query.filter(District.province_id == province_id)
     rows = query.all()
-    return [{"id": d.id, "name": d.name, "province_id": d.province_id} for d in rows]
+    result = []
+    for d in rows:
+        count = db.query(Customer).filter(Customer.district_id == d.id).count()
+        result.append({
+            "id": d.id, 
+            "name": d.name, 
+            "province_id": d.province_id,
+            "total_customers": count,
+            "district_type": d.district_type,
+            "main_crop_family_id": d.main_crop_family_id,
+            "main_crop_family_name": d.main_crop_family.family_name if d.main_crop_family else None
+        })
+    return result
 
 
 @router.get("/regions", response_model=List[Any])
@@ -303,16 +331,26 @@ def list_regions(
     district_id: Optional[int] = None,
 ) -> Any:
     """List regions; optional filter by province_id and/or district_id."""
-    query = db.query(Region).order_by(Region.name)
+    query = db.query(Region).options(joinedload(Region.main_crop_family)).order_by(Region.name)
     if province_id is not None:
         query = query.filter(Region.province_id == province_id)
     if district_id is not None:
         query = query.filter(Region.district_id == district_id)
     rows = query.all()
-    return [
-        {"id": r.id, "name": r.name, "district_id": r.district_id, "province_id": r.province_id}
-        for r in rows
-    ]
+    result = []
+    for r in rows:
+        count = db.query(Customer).filter(Customer.region_id == r.id).count()
+        result.append({
+            "id": r.id, 
+            "name": r.name, 
+            "district_id": r.district_id, 
+            "province_id": r.province_id,
+            "total_customers": count,
+            "region_type": r.region_type,
+            "main_crop_family_id": r.main_crop_family_id,
+            "main_crop_family_name": r.main_crop_family.family_name if r.main_crop_family else None
+        })
+    return result
 
 
 @router.get("/camps", response_model=List[Any])
@@ -326,7 +364,19 @@ def list_camps(
     if region_id is not None:
         query = query.filter(Camp.region_id == region_id)
     rows = query.all()
-    return [{"id": c.id, "name": c.name, "region_id": c.region_id} for c in rows]
+    result = []
+    for c in rows:
+        count = db.query(Customer).filter(Customer.camp_id == c.id).count()
+        result.append({
+            "id": c.id, 
+            "name": c.name, 
+            "region_id": c.region_id,
+            "province_id": c.province_id,
+            "district_id": c.district_id,
+            "total_customers": count,
+            "camp_type": c.camp_type
+        })
+    return result
 
 
 @router.get("/national-crops", response_model=List[Any])
@@ -582,12 +632,13 @@ def create_district(
     district = District(
         name=payload.name,
         province_id=payload.province_id,
+        district_type=payload.district_type,
         main_crop_family_id=payload.main_crop_family_id,
     )
     db.add(district)
     db.commit()
     db.refresh(district)
-    return {"id": district.id, "name": district.name, "province_id": district.province_id, "main_crop_family_id": district.main_crop_family_id}
+    return {"id": district.id, "name": district.name, "province_id": district.province_id, "district_type": district.district_type, "main_crop_family_id": district.main_crop_family_id}
 
 @router.put("/districts/{district_id}", response_model=Any)
 def update_district(
@@ -606,11 +657,13 @@ def update_district(
         district.name = payload.name
     if payload.province_id is not None:
         district.province_id = payload.province_id
+    if payload.district_type is not None:
+        district.district_type = payload.district_type
     if payload.main_crop_family_id is not None:
         district.main_crop_family_id = payload.main_crop_family_id
     db.commit()
     db.refresh(district)
-    return {"id": district.id, "name": district.name, "province_id": district.province_id, "main_crop_family_id": district.main_crop_family_id}
+    return {"id": district.id, "name": district.name, "province_id": district.province_id, "district_type": district.district_type, "main_crop_family_id": district.main_crop_family_id}
 
 @router.delete("/districts/{district_id}")
 def delete_district(
@@ -654,12 +707,13 @@ def create_region(
         name=payload.name,
         district_id=payload.district_id,
         province_id=province_id,
+        region_type=payload.region_type,
         main_crop_family_id=payload.main_crop_family_id,
     )
     db.add(region)
     db.commit()
     db.refresh(region)
-    return {"id": region.id, "name": region.name, "district_id": region.district_id, "province_id": region.province_id, "main_crop_family_id": region.main_crop_family_id}
+    return {"id": region.id, "name": region.name, "district_id": region.district_id, "province_id": region.province_id, "region_type": region.region_type, "main_crop_family_id": region.main_crop_family_id}
 
 @router.put("/regions/{region_id}", response_model=Any)
 def update_region(
@@ -680,11 +734,13 @@ def update_region(
         region.district_id = payload.district_id
     if payload.province_id is not None:
         region.province_id = payload.province_id
+    if payload.region_type is not None:
+        region.region_type = payload.region_type
     if payload.main_crop_family_id is not None:
         region.main_crop_family_id = payload.main_crop_family_id
     db.commit()
     db.refresh(region)
-    return {"id": region.id, "name": region.name, "district_id": region.district_id, "province_id": region.province_id, "main_crop_family_id": region.main_crop_family_id}
+    return {"id": region.id, "name": region.name, "district_id": region.district_id, "province_id": region.province_id, "region_type": region.region_type, "main_crop_family_id": region.main_crop_family_id}
 
 @router.delete("/regions/{region_id}")
 def delete_region(
@@ -731,11 +787,12 @@ def create_camp(
         region_id=payload.region_id,
         district_id=district_id,
         province_id=province_id,
+        camp_type=payload.camp_type,
     )
     db.add(camp)
     db.commit()
     db.refresh(camp)
-    return {"id": camp.id, "name": camp.name, "region_id": camp.region_id, "district_id": camp.district_id, "province_id": camp.province_id}
+    return {"id": camp.id, "name": camp.name, "region_id": camp.region_id, "district_id": camp.district_id, "province_id": camp.province_id, "camp_type": camp.camp_type}
 
 @router.put("/camps/{camp_id}", response_model=Any)
 def update_camp(
@@ -758,9 +815,11 @@ def update_camp(
         camp.district_id = payload.district_id
     if payload.province_id is not None:
         camp.province_id = payload.province_id
+    if payload.camp_type is not None:
+        camp.camp_type = payload.camp_type
     db.commit()
     db.refresh(camp)
-    return {"id": camp.id, "name": camp.name, "region_id": camp.region_id, "district_id": camp.district_id, "province_id": camp.province_id}
+    return {"id": camp.id, "name": camp.name, "region_id": camp.region_id, "district_id": camp.district_id, "province_id": camp.province_id, "camp_type": camp.camp_type}
 
 @router.delete("/camps/{camp_id}")
 def delete_camp(

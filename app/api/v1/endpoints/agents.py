@@ -240,6 +240,14 @@ def create_agent(
         phone=agent_in.phone,
         permissions=agent_in.permissions,
         role_id=agent_in.role_id,
+        age=agent_in.age,
+        sex=agent_in.sex,
+        profession=agent_in.profession,
+        nrc=agent_in.nrc,
+        province_id=agent_in.province_id,
+        district_id=agent_in.district_id,
+        region_id=agent_in.region_id,
+        camp_id=agent_in.camp_id,
     )
     db.add(db_obj)
     db.commit()

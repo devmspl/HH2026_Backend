@@ -44,16 +44,31 @@ def create_template(template: TemplateCreate, db: Session = Depends(get_db), cur
     return db_template
 
 @router.get("/logs")
-def get_logs(db: Session = Depends(get_db)):
-    logs = db.query(NotificationLog).order_by(NotificationLog.timestamp.desc()).all()
+def get_logs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Get notification logs with role-based visibility."""
+    query = db.query(NotificationLog)
+    
+    is_admin = current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
+    
+    if not is_admin:
+        # Non-admins only see notifications they are involved in (sent or received)
+        query = query.filter(
+            (NotificationLog.recipient_id == current_user.id) | 
+            (NotificationLog.sender_id == current_user.id)
+        )
+        
+    logs = query.order_by(NotificationLog.timestamp.desc()).all()
     return [
         {
             "id": l.id,
             "recipient": l.recipient.full_name if l.recipient else f"User {l.recipient_id}",
             "sent_by": l.sender.full_name if l.sender else "System",
             "type": l.type,
+            "title": l.title or "Notification",
             "message": l.message,
+            "icon": l.icon or "Notifications",
             "status": l.status,
+            "is_read": l.is_read or l.status == "read",
             "created_at": l.timestamp
         }
         for l in logs
@@ -72,9 +87,11 @@ def get_my_notifications(db: Session = Depends(get_db), current_user: User = Dep
         {
             "id": l.id,
             "type": l.type,
+            "title": l.title or "Notification",
             "message": l.message,
+            "icon": l.icon or "Notifications",
             "status": l.status,
-            "is_read": l.status == "read",
+            "is_read": l.is_read or l.status == "read",
             "sent_by": l.sender.full_name if l.sender else "System",
             "created_at": l.timestamp,
         }
@@ -91,6 +108,7 @@ def mark_notification_read(log_id: int, db: Session = Depends(get_db), current_u
     if not log:
         raise HTTPException(status_code=404, detail="Notification not found")
     log.status = "read"
+    log.is_read = True
     db.commit()
     return {"message": "Marked as read"}
 
@@ -100,7 +118,7 @@ def mark_all_notifications_read(db: Session = Depends(get_db), current_user: Use
     db.query(NotificationLog).filter(
         NotificationLog.recipient_id == current_user.id,
         NotificationLog.status == "sent"
-    ).update({"status": "read"})
+    ).update({"status": "read", "is_read": True})
     db.commit()
     return {"message": "All notifications marked as read"}
 
@@ -109,7 +127,7 @@ def get_unread_count(db: Session = Depends(get_db), current_user: User = Depends
     """Get unread notification count for current user."""
     count = db.query(NotificationLog).filter(
         NotificationLog.recipient_id == current_user.id,
-        NotificationLog.status == "sent"
+        (NotificationLog.status == "sent") | (NotificationLog.is_read == False)
     ).count()
     return {"count": count}
 

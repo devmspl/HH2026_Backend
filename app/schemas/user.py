@@ -19,6 +19,14 @@ class UserBase(BaseModel):
     parent_id: Optional[int] = None
     avatar_url: Optional[str] = None
     permissions: Optional[str] = None # JSON string of allowed menu IDs
+    age: Optional[int] = None
+    sex: Optional[str] = None
+    profession: Optional[str] = None
+    nrc: Optional[str] = None
+    province_id: Optional[int] = None
+    district_id: Optional[int] = None
+    region_id: Optional[int] = None
+    camp_id: Optional[int] = None
 
 # Properties to receive via API on creation (strict email on input)
 class UserCreate(UserBase):

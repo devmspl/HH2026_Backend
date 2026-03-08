@@ -593,12 +593,10 @@ def create_report(
     - If survey targets selected agents, the assigned agent must be in that list.
     """
     from app.models.user import Survey, TargetRespondents
-    # Only AGENT role can submit; Admin/Super Admin can create on behalf of any agent
-    if current_user.role not in (UserRole.AGENT, UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only agents or admins can create reports",
-        )
+    # All roles can submit their own reports. 
+    # Admins/Super Admins can create reports on behalf of any agent.
+    # We remove the restrictive role check here to allow CAMP, REGION, etc. to submit.
+    
     survey = db.query(Survey).filter(Survey.id == report_in.survey_id).first()
     if not survey:
         raise HTTPException(status_code=404, detail="Survey not found")

@@ -12,13 +12,15 @@ from app.core.audit import log_action
 
 router = APIRouter()
 
-def _notify_assigned_agents(db: Session, survey: Survey, agent_ids: List[int], message: str):
+def _notify_assigned_agents(db: Session, survey: Survey, agent_ids: List[int], title: str, message: str, icon: str = "Assignment"):
     """Send an in-app notification to the list of agent IDs."""
     for uid in agent_ids:
         log = NotificationLog(
             recipient_id=uid,
             type="push",
+            title=title,
             message=message,
+            icon=icon,
             status="sent"
         )
         db.add(log)
@@ -104,13 +106,13 @@ def create_survey(
         # Notify assigned agents about the new survey
         assigned_ids = [u.id for u in survey.target_users]
         if assigned_ids:
+            notify_title = f"New Survey Assigned"
             notify_msg = (
-                f"📋 New Survey Assigned: '{survey.name}'\n"
+                f"You have been assigned to: '{survey.name}'\n"
                 f"Type: {survey.form_type}\n"
-                f"Description: {survey.description or 'N/A'}\n"
-                f"Please complete this survey as instructed."
+                f"Description: {survey.description or 'N/A'}"
             )
-            _notify_assigned_agents(db, survey, assigned_ids, notify_msg)
+            _notify_assigned_agents(db, survey, assigned_ids, notify_title, notify_msg, icon="Assignment")
             db.commit()
 
         survey_out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": assigned_ids})
@@ -147,22 +149,28 @@ def launch_survey(
     db.refresh(survey)
 
     # Notify all assigned agents (or all agents if target is All)
-    from app.models.user import TargetRespondents
-    if survey.target_respondents == TargetRespondents.ALL:
-        all_agent_ids = [u.id for u in db.query(User).filter(User.role == UserRole.AGENT).all()]
-        notify_targets = all_agent_ids
+    target_val = str(survey.target_respondents)
+    if target_val in ["All Agents", "TargetRespondents.ALL"]:
+        from app.models.user import UserRole
+        field_roles = [UserRole.AGENT, UserRole.CAMP, UserRole.REGION, UserRole.DISTRICT, UserRole.PROVINCIAL]
+        all_field_users = db.query(User).filter(User.role.in_(field_roles), User.is_deleted == False).all()
+        notify_targets = [u.id for u in all_field_users]
     else:
         notify_targets = [u.id for u in survey.target_users]
 
     if notify_targets:
-        launch_msg = (
-            f"🚀 Survey Launched: '{survey.name}' is now ACTIVE!\n"
-            f"Type: {survey.form_type}\n"
-            f"Please log in and complete your survey submission as soon as possible."
-        )
-        _notify_assigned_agents(db, survey, notify_targets, launch_msg)
-        db.commit()
+        try:
+            # We use a separate nested transaction or just commit again after notifications
+            launch_title = "New Survey Active"
+            launch_msg = f"🚀 '{survey.name}' is now ACTIVE. Please start submissions."
+            _notify_assigned_agents(db, survey, notify_targets, launch_title, launch_msg, icon="RocketLaunch")
+            db.commit()
+        except Exception as e:
+            db.rollback() # Rollback the notifications only
+            print(f"Notification error: {str(e)}")
+            pass
 
+    # Log action in a fresh transaction state if needed
     log_action(db, current_user.id, "LAUNCH_SURVEY", f"Launched survey '{survey.name}' (ID: {survey_id})")
     return SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
 

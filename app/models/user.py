@@ -289,9 +289,12 @@ class NotificationLog(Base):
     recipient_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     sender_id = Column(Integer, ForeignKey("users.id"), nullable=True)   # who sent it
     type = Column(String(20), nullable=False) # sms, push
+    title = Column(String(255), nullable=True)
     message = Column(String, nullable=False)
+    icon = Column(String(50), nullable=True)
     status = Column(String(20), default="pending") # sent, read, failed
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    is_read = Column(Boolean(), default=False)
     
     recipient = relationship("User", back_populates="notifications", foreign_keys=[recipient_id])
     sender   = relationship("User", foreign_keys=[sender_id])
