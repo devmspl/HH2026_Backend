@@ -21,28 +21,54 @@ def _aggregate_national_crop_reports(
     total_farmers = 0
     participating_farmers = 0
     spoiled_responses = 0
-    crop_agg: Dict[Tuple[str, str], Dict[str, float]] = {}
+    crop_agg: Dict[Tuple[str, str, Optional[str]], Dict[str, float]] = {}
+
+    def safe_int(val):
+        try:
+            if val is None: return 0
+            if isinstance(val, (int, float)): return int(val)
+            return int(float(val))
+        except (ValueError, TypeError):
+            return 0
 
     for report in reports:
         if not report.survey_data:
             continue
         try:
-            data = json.loads(report.survey_data)
+            if isinstance(report.survey_data, str):
+                data = json.loads(report.survey_data)
+            elif isinstance(report.survey_data, dict):
+                data = report.survey_data
+            else:
+                continue
         except Exception:
             continue
-        total_farmers += int(data.get("total_farmers", 0) or 0)
-        participating_farmers += int(data.get("participating_farmers", 0) or 0)
-        spoiled_responses += int(data.get("spoiled_responses", 0) or 0)
-        for crop in data.get("crops", []):
+            
+        total_farmers += safe_int(data.get("total_farmers"))
+        participating_farmers += safe_int(data.get("participating_farmers"))
+        spoiled_responses += safe_int(data.get("spoiled_responses"))
+
+        
+        # Robust handling of 'crops' list
+        crops = data.get("crops")
+        if not isinstance(crops, list):
+            continue
+            
+        for crop in crops:
+            if not isinstance(crop, dict):
+                continue
             crop_id = crop.get("crop_id") or crop.get("id")
             crop_name = str(crop.get("crop_name") or "").strip()
             family_name = str(crop.get("family_name") or "").strip()
             if not crop_name or not family_name:
                 continue
-            yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            try:
+                yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            except (ValueError, TypeError):
+                yield_tonnes = 0.0
             
-            # If crop_id is missing in JSON, try to look it up in the provided map
-            final_crop_id = crop_id
+            # Use string ID consistently
+            final_crop_id = str(crop_id) if crop_id is not None else None
             if not final_crop_id and crop_name and crop_id_map:
                 final_crop_id = crop_id_map.get(crop_name)
 
@@ -58,11 +84,7 @@ def _aggregate_national_crop_reports(
 
     for (crop_name, family_name, crop_id), metrics in crop_agg.items():
         yield_tonnes = metrics["yield_tonnes"]
-        # If per-crop participation isn't in data, use report-level participation for now
-        # Ideally, 'crops' array in survey_data should have 'participating_farmers'
         
-        # Percentage of Participating Customers who grew this crop (if available, else 100%)
-        # Here we use report-level as fallback
         p_cust = participating_customers_total
         a_cust = active_customers_total
         
@@ -101,6 +123,7 @@ def _aggregate_national_crop_reports(
             )
         )
     return total_farmers, participating_farmers, spoiled_responses, rows, families
+
 
 
 @router.get("/", response_model=List[general_schema.Report])
@@ -324,7 +347,9 @@ def get_regional_crops_tally(
     query = (
         db.query(Report)
         .join(Survey, Report.survey_id == Survey.id)
-        .filter(Survey.form_type == "Regional Crops Survey")
+        .filter(
+            (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey")
+        )
     )
     if region_id is not None:
         query = query.filter(Report.region_id == region_id)
@@ -333,6 +358,7 @@ def get_regional_crops_tally(
     if province_id is not None:
         query = query.filter(Report.province_id == province_id)
     reports = query.all()
+
 
     total_farmers = 0
     participating_farmers = 0
@@ -352,16 +378,30 @@ def get_regional_crops_tally(
     for c in rcrops_info:
         id_map[str(c.crop_name).strip().lower()] = str(c.id)
 
+    def safe_int(val):
+        try:
+            if val is None: return 0
+            if isinstance(val, (int, float)): return int(val)
+            return int(float(val))
+        except (ValueError, TypeError):
+            return 0
+
     for report in reports:
         if not report.survey_data:
             continue
         try:
-            data = json.loads(report.survey_data)
+            if isinstance(report.survey_data, str):
+                data = json.loads(report.survey_data)
+            elif isinstance(report.survey_data, dict):
+                data = report.survey_data
+            else:
+                continue
         except Exception:
             continue
-        total_farmers += int(data.get("total_farmers", 0) or 0)
-        participating_farmers += int(data.get("participating_farmers", 0) or 0)
-        spoiled_responses += int(data.get("spoiled_responses", 0) or 0)
+        total_farmers += safe_int(data.get("total_farmers"))
+        participating_farmers += safe_int(data.get("participating_farmers"))
+        spoiled_responses += safe_int(data.get("spoiled_responses"))
+
 
         region_name = None
         district_name = None
@@ -379,16 +419,22 @@ def get_regional_crops_tally(
                     if p:
                         province_name = p.name
 
-        for crop in data.get("crops", []):
+        for crop in (data.get("crops") or []):
+            if not isinstance(crop, dict):
+                continue
             crop_id = crop.get("rcrop_id") or crop.get("id")
             crop_name = str(crop.get("crop_name") or "").strip()
             family_name = str(crop.get("family_name") or "").strip()
             if not crop_name or not family_name:
                 continue
-            yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            
+            try:
+                yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            except (ValueError, TypeError):
+                yield_tonnes = 0.0
             
             # Use ID from report or fallback to DB lookup
-            final_id = crop_id
+            final_id = str(crop_id) if crop_id is not None else None
             search_name = crop_name.lower()
             if not final_id and search_name in id_map:
                 final_id = id_map[search_name]
@@ -402,6 +448,7 @@ def get_regional_crops_tally(
                     "province_name": province_name,
                 }
             agg[key]["yield_tonnes"] += yield_tonnes
+
 
     active_customers_total = total_farmers
     participating_customers_total = participating_farmers
@@ -469,15 +516,24 @@ def get_dominant_crop_map(
             data = json.loads(report.survey_data)
         except Exception:
             continue
-        for crop in data.get("crops", []):
+        crops = data.get("crops")
+        if not isinstance(crops, list):
+            continue
+        for crop in crops:
+            if not isinstance(crop, dict):
+                continue
             family_name = str(crop.get("family_name") or "").strip()
             if not family_name:
                 continue
-            yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            try:
+                yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            except (ValueError, TypeError):
+                yield_tonnes = 0.0
             if report.province_id:
                 province_family_yield[report.province_id][family_name] += yield_tonnes
             if report.region_id:
                 region_family_yield[report.region_id][family_name] += yield_tonnes
+
 
     by_province: List[Dict[str, Any]] = []
     for pid, family_yields in province_family_yield.items():
@@ -550,12 +606,21 @@ def get_top_family_by_province(
             data = json.loads(report.survey_data)
         except Exception:
             continue
-        for crop in data.get("crops", []):
+        crops = data.get("crops")
+        if not isinstance(crops, list):
+            continue
+        for crop in crops:
+            if not isinstance(crop, dict):
+                continue
             family_name = str(crop.get("family_name") or "").strip()
             if not family_name:
                 continue
-            yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            try:
+                yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
+            except (ValueError, TypeError):
+                yield_tonnes = 0.0
             province_family_yield[report.province_id][family_name] += yield_tonnes
+
 
     # For each province, find dominant family
     province_dominant: Dict[int, str] = {}
