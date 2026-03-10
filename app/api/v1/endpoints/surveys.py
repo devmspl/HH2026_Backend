@@ -39,11 +39,16 @@ def get_surveys(
     from app.models.user import UserRole, TargetRespondents
     
     if current_user.role == UserRole.AGENT:
-        # Agents only see ACTIVE surveys assigned to them
-        query = query.filter(Survey.status == SurveyStatus.ACTIVE)
+        from sqlalchemy import or_
+        # Agents only see ACTIVE surveys assigned to them OR surveys they created themselves
         query = query.filter(
-            (Survey.target_respondents == TargetRespondents.ALL) |
-            (Survey.target_users.any(User.id == current_user.id))
+            or_(
+                (Survey.status == SurveyStatus.ACTIVE) & (
+                    (Survey.target_respondents == TargetRespondents.ALL) |
+                    (Survey.target_users.any(User.id == current_user.id))
+                ),
+                (Survey.created_by == current_user.id)
+            )
         )
     
     surveys = query.order_by(Survey.created_at.desc()).all()
@@ -75,7 +80,7 @@ def get_survey(
 def create_survey(
     survey_in: SurveyCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.NATIONAL, UserRole.PROVINCIAL, UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP, UserRole.AGENT])),
 ):
     """
     Create a new survey in DRAFT status.
@@ -129,7 +134,7 @@ def create_survey(
 def launch_survey(
     survey_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.NATIONAL, UserRole.PROVINCIAL, UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP, UserRole.AGENT])),
 ):
     """
     Launch a survey (set status to ACTIVE).
@@ -178,7 +183,7 @@ def launch_survey(
 def end_survey(
     survey_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.NATIONAL, UserRole.PROVINCIAL, UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP, UserRole.AGENT])),
 ):
     """
     End a survey (set status to ENDED).
@@ -202,7 +207,7 @@ def update_survey_status(
     survey_id: int,
     status: SurveyStatus,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.NATIONAL, UserRole.PROVINCIAL, UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP, UserRole.AGENT])),
 ):
     """
     Update survey status (generic endpoint).
@@ -227,7 +232,7 @@ def update_survey(
     survey_id: int,
     survey_in: SurveyUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.NATIONAL, UserRole.PROVINCIAL, UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP, UserRole.AGENT])),
 ):
     """
     Update a survey.
@@ -269,7 +274,7 @@ def update_survey(
 def delete_survey(
     survey_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN])),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.NATIONAL, UserRole.PROVINCIAL, UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP, UserRole.AGENT])),
 ):
     """
     Delete a survey.
