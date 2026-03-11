@@ -1,17 +1,20 @@
-def convert_report_to_sms(report_data: dict, title: str, agent_name: str = "Agent") -> str:
+def convert_report_to_sms(report_data: dict, title: str, agent_name: str = "Agent", region_name: str = "N/A") -> str:
     """
     Converts report/survey data into a compact 160-character SMS text (spec requirement).
-
-    Handles structure: total_farmers, participating_farmers, spoiled_responses, crops: [{ crop_name, family_name, yield_tonnes }].
-    Example: NAT|TF:250|PF:200|SR:5|MAIZ:10,RICE:5
+    Target format: NS|Ag:{Agent}|Reg:{Region}|TF:{Total}|PF:{Participating}|SR:{Spoiled}|Wh:{Yield}|Rc:{Yield}
     """
     if not report_data:
-        return (title[:3].upper() or "RPT") + "|BY:" + (agent_name[:8] or "Agent")
+        return "NS" + "|Ag:" + (agent_name[:8] or "Agent")
 
     parts = []
-    prefix = (title[:3].upper() or "RPT").replace(" ", "")
-    parts.append(prefix)
-    parts.append("BY:" + (str(agent_name)[:10].replace(" ", "") or "Agent"))
+    # Use "NS" or "RS" based on title
+    if "regional" in title.lower():
+        parts.append("RS")
+    else:
+        parts.append("NS")
+
+    parts.append(f"Ag:{str(agent_name)[:10].replace(' ', '') or 'Agent'}")
+    parts.append(f"Reg:{str(region_name)[:10].replace(' ', '')}")
 
     tf = report_data.get("total_farmers") or report_data.get("total_farmers_region") or 0
     pf = report_data.get("participating_farmers") or report_data.get("participating_farmers_region") or 0
@@ -24,7 +27,8 @@ def convert_report_to_sms(report_data: dict, title: str, agent_name: str = "Agen
     if isinstance(crops, list) and crops:
         crop_parts = []
         for c in crops[:15]:  # limit to avoid overflow
-            name = (c.get("crop_name") or c.get("name") or "")[:6].upper().replace(" ", "")
+            # Use 2 characters for crop name as per example: Wh for Wheat, Rc for Rice
+            name = (c.get("crop_name") or c.get("name") or "")[:2].title().replace(" ", "")
             y = c.get("yield_tonnes") or c.get("yield") or 0
             try:
                 y = int(float(y)) if float(y) == int(float(y)) else round(float(y), 1)
@@ -33,10 +37,13 @@ def convert_report_to_sms(report_data: dict, title: str, agent_name: str = "Agen
             if name:
                 crop_parts.append(f"{name}:{y}")
         if crop_parts:
-            parts.append(",".join(crop_parts)[:80])
+            parts.append("|".join(crop_parts)[:80])
     elif isinstance(report_data.get("crops"), dict):
+        crop_parts = []
         for k, v in list(report_data["crops"].items())[:8]:
-            parts.append(f"{str(k)[:4].upper()}:{v}")
+            crop_parts.append(f"{str(k)[:2].title()}:{v}")
+        if crop_parts:
+            parts.append("|".join(crop_parts)[:80])
 
     sms_text = "|".join(parts)
     if len(sms_text) > 160:
@@ -98,8 +105,12 @@ def send_survey_sms(sms_text: str, db_session):
         print(f"DEBUG: Using env fallback DEFAULT_ADMIN_SMS: {target_number}")
     
     if recipient_id is None:
-        # If we didn't resolve a real user, fall back to 1 for logging
-        recipient_id = 1
+        # If we didn't resolve a real user via super admin check, try to find any admin
+        any_admin = db_session.query(User).filter(
+            User.is_active == True,
+            User.is_deleted == False
+        ).order_by(User.id.asc()).first()
+        recipient_id = any_admin.id if any_admin else 1
     
     print(f"DEBUG: Processing SMS TO {target_number}: {sms_text}")
     

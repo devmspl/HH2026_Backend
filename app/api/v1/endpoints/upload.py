@@ -43,8 +43,10 @@ def upload_file(
         print("DEBUG: Upload successful!")
         return {
             "url": response.get("secure_url"),
+            "file_url": response.get("secure_url"), # Alias for mobile
             "public_id": response.get("public_id"),
-            "original_filename": file.filename
+            "original_filename": file.filename,
+            "file_name": file.filename # Alias for mobile
         }
         
     except Exception as e:

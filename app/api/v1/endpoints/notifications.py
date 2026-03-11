@@ -27,7 +27,17 @@ class NotificationSend(BaseModel):
 class ConfigSave(BaseModel):
     key: str # 'sms_settings' or 'push_settings'
     value: dict
-0
+@router.get("/config/sms-number")
+def get_sms_number(db: Session = Depends(get_db)):
+    config = db.query(SystemConfiguration).filter(SystemConfiguration.key == "sms_settings").first()
+    if config:
+        try:
+            val = json.loads(config.value)
+            return {"smsNumber": val.get("survey_number") or val.get("default_number") or "+1234567890"}
+        except:
+             pass
+    return {"smsNumber": "+1234567890"}
+
 @router.get("/templates")
 def get_templates(db: Session = Depends(get_db)):
     return db.query(NotificationTemplate).all()

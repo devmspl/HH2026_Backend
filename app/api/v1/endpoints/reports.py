@@ -185,7 +185,13 @@ def read_reports(
         
         if report.survey:
             report.survey_name = report.survey.name
-        
+
+        if report.survey_data:
+            try:
+                report.survey_responses = json.loads(report.survey_data)
+            except:
+                report.survey_responses = {}
+
         for edit in report.edits:
             edit_user = db.query(User).filter(User.id == edit.user_id).first()
             if edit_user:
@@ -690,7 +696,7 @@ def create_report(
     province_id = getattr(report_in, "province_id", None)
     district_id = getattr(report_in, "district_id", None)
     region_id = getattr(report_in, "region_id", None)
-    camp_id = None
+    camp_id = getattr(report_in, "camp_id", None)
 
     if province_id is None and district_id is None and region_id is None:
         if current_user.role == UserRole.AGENT and current_user.id == report_agent_id:
@@ -732,12 +738,23 @@ def create_report(
     agent = db.query(User).filter(User.id == report_in.agent_id).first()
     agent_name = agent.full_name if agent else "Unknown Agent"
     
+    region_name = "N/A"
+    if region_id:
+        from app.models.user import Region
+        region = db.query(Region).filter(Region.id == region_id).first()
+        if region:
+            region_name = region.name
+
     sms_text = convert_report_to_sms(
         report_in.survey_responses, 
         report_in.title, 
-        agent_name
+        agent_name,
+        region_name
     )
-    send_survey_sms(sms_text, db)
+    try:
+        send_survey_sms(sms_text, db)
+    except Exception as e:
+        print(f"DEBUG: SMS notification failed (non-blocking): {e}")
 
     # Process media if provided
     if report_in.media:
@@ -763,6 +780,22 @@ def create_report(
             db.add(db_media)
         db.commit()
         db.refresh(db_obj)
+
+    # Populate details for the response
+    db_obj.agent_name = agent.full_name if agent else "Unknown Agent"
+    db_obj.agent_role = agent.role if agent else None
+    db_obj.agent_email = agent.email if agent else None
+    db_obj.agent_phone = agent.phone if agent else None
+    db_obj.agent_avatar = agent.avatar_url if agent else None
+    
+    if survey:
+        db_obj.survey_name = survey.name
+
+    if db_obj.survey_data:
+        try:
+            db_obj.survey_responses = json.loads(db_obj.survey_data)
+        except:
+            db_obj.survey_responses = {}
 
     return db_obj
 

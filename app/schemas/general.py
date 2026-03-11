@@ -29,6 +29,10 @@ class ReportBase(BaseModel):
 
 class ReportCreate(ReportBase):
     agent_id: int
+    agent_name: Optional[str] = None
+    agent_role: Optional[str] = None
+    agent_email: Optional[str] = None
+    agent_phone: Optional[str] = None
     survey_id: int
     survey_responses: Optional[dict] = None # For SMS notification
     media: Optional[List[dict]] = None # List of {url, type, name}
@@ -36,6 +40,7 @@ class ReportCreate(ReportBase):
     province_id: Optional[int] = None  # For Crop Domination Map (By Province)
     district_id: Optional[int] = None
     region_id: Optional[int] = None    # For Crop Domination Map (By Region)
+    camp_id: Optional[int] = None      # For granular tracking
 
 
 class ReportUpdate(BaseModel):
@@ -83,6 +88,7 @@ class Report(ReportBase):
     district_id: Optional[int] = None
     region_id: Optional[int] = None
     camp_id: Optional[int] = None
+    survey_responses: Optional[dict] = None
 
     class Config:
         from_attributes = True

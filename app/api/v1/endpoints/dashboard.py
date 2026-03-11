@@ -61,12 +61,26 @@ def get_dashboard_stats(
     report_q = db.query(Report)
     
     if not is_admin:
-        # Non-admin metrics
-        # Managed Agents = people in hierarchy/location EXCEPT current user
-        managed_user_ids = [uid for uid in user_ids_in_hierarchy if uid != current_user.id]
+        from app.models.user import Region
         
-        total_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False).count() if managed_user_ids else 0
-        active_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False, User.is_active == True).count() if managed_user_ids else 0
+        # Fast SQL JOIN for agents based on agent's assigned region (Auto-calculated via JOIN)
+        if current_user.region_id:
+            total_agents = db.query(User).join(Region, User.region_id == Region.id).filter(
+                Region.id == current_user.region_id,
+                User.is_deleted == False
+            ).count()
+
+            active_agents = db.query(User).join(Region, User.region_id == Region.id).filter(
+                Region.id == current_user.region_id,
+                User.is_active == True,
+                User.is_deleted == False
+            ).count()
+        else:
+            # Managed Agents = people in hierarchy/location EXCEPT current user (Fallback)
+            managed_user_ids = [uid for uid in user_ids_in_hierarchy if uid != current_user.id]
+            total_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False).count() if managed_user_ids else 0
+            active_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False, User.is_active == True).count() if managed_user_ids else 0
+
         
         # Reports = from anyone in my scope (including me)
         report_q = report_q.filter(Report.agent_id.in_(user_ids_in_hierarchy))
