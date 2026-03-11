@@ -4,7 +4,7 @@ A FastAPI-based backend service for customer accounting planning and management.
 
 ## Overview
 
-This is the backend API for the CCNS Customer 180 customer accounting planner application. It provides RESTful endpoints for managing customers, agents, surveys, reports, and other business entities with authentication and authorization features.
+This is the backend API for the CCNS Customer 180 customer accounting planner application. It provides RESTful endpoints for managing customers, agents, surveys, reports, and other business entities with authentication and authorization features.ss
 
 ## Tech Stack
 
