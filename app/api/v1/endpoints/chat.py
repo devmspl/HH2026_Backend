@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.db.session import get_db
-from app.models.user import User, ChatGroup, ChatMessage
+from app.models.user import User, ChatGroup, ChatMessage, UserRole
 from app.schemas import general as general_schema
 from pydantic import BaseModel
 
@@ -159,3 +159,88 @@ def send_chat_message(payload: MessageCreate, db: Session = Depends(get_db), cur
     db.commit()
     db.refresh(msg)
     return msg
+
+@router.get("/region-members", response_model=List[general_schema.RegionMember])
+def get_region_members(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Returns all users belonging to the same region as the logged-in user.
+    """
+    if not current_user.region_id:
+        return []
+        # Alternatively, raise error if you expect them to ALWAYS have a region
+    
+    users = db.query(User).filter(
+        User.region_id == current_user.region_id,
+        User.role.in_([UserRole.REGION, UserRole.CAMP, UserRole.AGENT]),
+        User.is_deleted == False
+    ).all()
+    
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id} for u in users]
+
+@router.post("/region-group", response_model=general_schema.RegionGroupResponse)
+def create_region_group(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Create or get a Region Chat Group for the current user's region.
+    """
+    if not current_user.region_id:
+        raise HTTPException(status_code=400, detail="User has no assigned region")
+    
+    # 1. Check if group exists
+    from app.models.user import Region
+    region = db.query(Region).filter(Region.id == current_user.region_id).first()
+    region_name = region.name if region else "Unknown"
+    
+    group = db.query(ChatGroup).filter(
+        ChatGroup.group_type == "REGION",
+        ChatGroup.region_id == current_user.region_id
+    ).first()
+    
+    if not group:
+        # 2. Create group
+        group = ChatGroup(
+            name=f"Region - {region_name}",
+            manager_id=current_user.id,
+            group_type="REGION",
+            region_id=current_user.region_id
+        )
+        db.add(group)
+        db.flush() # Get ID
+    
+    # 3. sync members
+    members = db.query(User).filter(
+        User.region_id == current_user.region_id,
+        User.role.in_([UserRole.REGION, UserRole.CAMP, UserRole.AGENT]),
+        User.is_deleted == False
+    ).all()
+    
+    group.members = members
+    db.commit()
+    db.refresh(group)
+    
+    return {
+        "group_id": group.id,
+        "group_name": group.name,
+        "members": [{"id": m.id, "name": m.full_name, "role": m.role, "region_id": m.region_id} for m in group.members]
+    }
+
+@router.get("/region-group", response_model=general_schema.RegionGroupResponse)
+def get_region_group(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Fetch the Region Chat Group details for the current user's region.
+    """
+    if not current_user.region_id:
+        raise HTTPException(status_code=400, detail="User has no assigned region")
+    
+    group = db.query(ChatGroup).filter(
+        ChatGroup.group_type == "REGION",
+        ChatGroup.region_id == current_user.region_id
+    ).first()
+    
+    if not group:
+        raise HTTPException(status_code=404, detail="Region group not found. Call POST /region-group first.")
+    
+    return {
+        "group_id": group.id,
+        "group_name": group.name,
+        "members": [{"id": m.id, "name": m.full_name, "role": m.role, "region_id": m.region_id} for m in group.members]
+    }

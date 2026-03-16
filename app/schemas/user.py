@@ -10,7 +10,7 @@ class UserBase(BaseModel):
     email: Optional[str] = None
     is_active: Optional[bool] = True
     full_name: Optional[str] = None
-    role: Optional[UserRole] = UserRole.AGENT
+    role: Optional[str] = "AGENT"
     role_id: Optional[int] = None
     last_lat: Optional[float] = None
     last_lng: Optional[float] = None

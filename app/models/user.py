@@ -36,7 +36,7 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255))
-    role = Column(Enum(UserRole), default=UserRole.AGENT, nullable=False)
+    role = Column(String(50), default="AGENT", nullable=False)
     
     # Dynamic Role
     role_id = Column(Integer, ForeignKey("system_roles.id"), nullable=True)
@@ -311,9 +311,12 @@ class ChatGroup(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    group_type = Column(String(50), nullable=True) # "REGION" or None
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
     
     members = relationship("User", secondary=chat_group_members, backref="chat_groups")
     messages = relationship("ChatMessage", back_populates="group")
+    region = relationship("Region")
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"

@@ -120,7 +120,7 @@ def seed_surveys(db, superuser_id):
     surveys = db.query(Survey).all()
     if surveys: return surveys
     
-    s1 = Survey(name="National Census", form_type=SurveyType.NATIONAL.value, status=SurveyStatus.ACTIVE.value, created_by=superuser_id)
+    s1 = Survey(name="National Survey", form_type=SurveyType.NATIONAL.value, status=SurveyStatus.ACTIVE.value, created_by=superuser_id)
     s2 = Survey(name="Regional Tally", form_type=SurveyType.REGIONAL.value, status=SurveyStatus.ACTIVE.value, created_by=superuser_id)
     db.add(s1)
     db.add(s2)

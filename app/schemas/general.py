@@ -116,8 +116,25 @@ class ChatGroup(BaseModel):
     id: int
     name: str
     manager_id: int
+    group_type: Optional[str] = None
+    region_id: Optional[int] = None
     members: List[UserSmall] = []
     messages: List[ChatMessage] = []
+    class Config:
+        from_attributes = True
+
+class RegionMember(BaseModel):
+    id: int
+    name: str
+    role: str
+    region_id: Optional[int]
+    class Config:
+        from_attributes = True
+
+class RegionGroupResponse(BaseModel):
+    group_id: int
+    group_name: str
+    members: List[RegionMember]
     class Config:
         from_attributes = True
 

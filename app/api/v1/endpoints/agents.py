@@ -15,8 +15,18 @@ router = APIRouter()
 
 from app.core.role_permissions import ROLE_HIERARCHY
 
-def get_role_level(role: UserRole) -> int:
-    return ROLE_HIERARCHY.get(role, 0)
+def get_role_level(role: Any) -> int:
+    if not role:
+        return 0
+    # Try direct match (handles UserRole enum and exact strings like "SUPER_ADMIN")
+    if role in ROLE_HIERARCHY:
+        return ROLE_HIERARCHY[role]
+    # Try case-insensitive string match
+    role_str = str(role).upper()
+    if role_str in ROLE_HIERARCHY:
+        return ROLE_HIERARCHY[role_str]
+    # Fallback to 0 (lowest)
+    return 0
 
 
 @router.get("/", response_model=List[user_schema.User])
@@ -88,7 +98,7 @@ def read_agents(
                 user_dict['approver_details'] = {
                     'id': approver.id,
                     'full_name': approver.full_name,
-                    'role': approver.role.value if approver.role else None,
+                    'role': approver.role.value if hasattr(approver.role, 'value') else str(approver.role) if approver.role else None,
                     'avatar_url': approver.avatar_url
                 }
         
@@ -226,11 +236,19 @@ def create_agent(
             account_status = AccountStatus.PENDING
             is_active = False # Inactive until approved
         
+    user_role = agent_in.role
+    # If a dynamic role_id is provided, sync the role name from the SystemRole table
+    if agent_in.role_id:
+        from app.models.user import SystemRole
+        system_role = db.query(SystemRole).filter(SystemRole.id == agent_in.role_id).first()
+        if system_role:
+            user_role = system_role.name
+
     db_obj = User(
         email=agent_in.email,
         hashed_password=get_password_hash(agent_in.password),
         full_name=agent_in.full_name,
-        role=agent_in.role,
+        role=user_role,
         parent_id=agent_in.parent_id if agent_in.parent_id else current_user.id,
         is_active=is_active,
         account_status=account_status,
@@ -273,9 +291,11 @@ def get_creatable_roles_endpoint(
     # Get dynamic roles
     system_roles = db.query(SystemRole).all()
     
+    display_role = current_user.role.value if hasattr(current_user.role, 'value') else str(current_user.role)
+    
     return {
-        "user_role": current_user.role.value,
-        "creatable_roles": creatable,
+        "user_role": display_role,
+        "creatable_roles": [r.value if hasattr(r, 'value') else str(r) for r in creatable],
         "system_roles": [
             {"id": sr.id, "name": sr.name, "permissions": sr.permissions} 
             for sr in system_roles
@@ -327,6 +347,13 @@ def update_agent(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"You cannot assign a role equal to or higher than your own."
             )
+
+    # Sync role string if role_id is updated
+    if "role_id" in update_data and update_data["role_id"]:
+        from app.models.user import SystemRole
+        system_role = db.query(SystemRole).filter(SystemRole.id == update_data["role_id"]).first()
+        if system_role:
+            update_data["role"] = system_role.name
             
     # Status validation - prevent deactivating Super Admins
     if "is_active" in update_data and not update_data["is_active"]:

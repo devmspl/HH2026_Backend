@@ -61,6 +61,11 @@ def login_access_token(
     if not effective_permissions and user.system_role:
         effective_permissions = user.system_role.permissions
         
+    # Determine the display role
+    display_role = user.role.value if hasattr(user.role, 'value') else str(user.role)
+    if user.system_role:
+        display_role = user.system_role.name
+        
     return {
         "access_token": security.create_access_token(
             user.id, expires_delta=access_token_expires
@@ -68,7 +73,7 @@ def login_access_token(
         "token_type": "bearer",
         "user_id": user.id,
         "full_name": user.full_name,
-        "role": user.role,
+        "role": display_role,
         "avatar_url": str(user.avatar_url) if user.avatar_url else None,
         "permissions": effective_permissions
     }
