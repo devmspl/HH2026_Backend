@@ -17,12 +17,43 @@ class GroupCreate(BaseModel):
     name: str
     member_ids: List[int]
 
+from sqlalchemy import text
+
 @router.get("/groups", response_model=List[general_schema.ChatGroup])
 def get_chat_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # Super admins see everything, others see groups they are members of
     if current_user.is_superuser:
         return db.query(ChatGroup).all()
     return current_user.chat_groups
+
+@router.get("/fix-db")
+def fix_database_errors(db: Session = Depends(get_db)):
+    msgs = []
+    try:
+        db.execute(text("ALTER TABLE chat_groups ADD COLUMN group_type VARCHAR(50);"))
+        db.commit()
+        msgs.append("Added group_type to chat_groups")
+    except Exception as e:
+        db.rollback()
+        msgs.append(f"group_type error: {e}")
+        
+    try:
+        db.execute(text("ALTER TABLE chat_groups ADD COLUMN region_id INTEGER REFERENCES regions(id);"))
+        db.commit()
+        msgs.append("Added region_id to chat_groups")
+    except Exception as e:
+        db.rollback()
+        msgs.append(f"region_id error: {e}")
+        
+    try:
+        db.execute(text("ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;"))
+        db.commit()
+        msgs.append("Altered role to VARCHAR(50)")
+    except Exception as e:
+        db.rollback()
+        msgs.append(f"role error: {e}")
+        
+    return {"status": "Complete", "logs": msgs}
 
 @router.post("/groups", response_model=general_schema.ChatGroup)
 def create_chat_group(payload: GroupCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
