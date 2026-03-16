@@ -58,10 +58,34 @@ def read_agents(
     
     if is_admin:
         # Admins see all roles <= current user level
+        from app.models.user import SystemRole
         allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level <= current_level]
-        query = query.filter(User.role.in_(allowed_roles))
-        # Exclude SUPER_ADMIN from the visible list for everyone (even super admins see others but maybe not themselves/peers to keep it clean)
-        query = query.filter(User.role != UserRole.SUPER_ADMIN)
+        allowed_role_strs = [r.value if hasattr(r, 'value') else str(r) for r in allowed_roles]
+        
+        # Also include any custom system roles if their mapped level (default 0) <= current_level
+        system_roles = db.query(SystemRole).all()
+        for sr in system_roles:
+            if get_role_level(sr.name) <= current_level:
+                allowed_role_strs.append(sr.name)
+                # also append title case or upper case as fallback
+                allowed_role_strs.append(sr.name.upper())
+                allowed_role_strs.append(sr.name.title())
+                
+        # Also add capitalized standard roles just in case
+        for r in allowed_roles:
+            val = r.value if hasattr(r, 'value') else str(r)
+            allowed_role_strs.append(val.title())
+            allowed_role_strs.append(val.upper())
+
+        # Filter by string match
+        query = query.filter(User.role.in_(allowed_role_strs))
+        
+        # Exclude SUPER_ADMIN from the visible list for everyone
+        query = query.filter(
+            User.role != UserRole.SUPER_ADMIN.value,
+            User.role != "SUPER_ADMIN",
+            User.role != "Super_Admin" # case safety
+        )
     else:
         # Non-admins only see their recursive subordinates
         to_process = [current_user.id]
@@ -124,11 +148,25 @@ def get_approval_list(
     # Typically, you approve users immediately below you who were created by someone of their own rank.
     # For simplicity/broadness: Show ALL pending users that are strictly LOWER than current user.
     
-    allowed_roles_to_approve = [role for role, level in ROLE_HIERARCHY.items() if level < current_level]
+    allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level < current_level]
+    allowed_role_strs = [r.value if hasattr(r, 'value') else str(r) for r in allowed_roles]
     
+    from app.models.user import SystemRole
+    system_roles = db.query(SystemRole).all()
+    for sr in system_roles:
+        if get_role_level(sr.name) < current_level:
+            allowed_role_strs.append(sr.name)
+            allowed_role_strs.append(sr.name.upper())
+            allowed_role_strs.append(sr.name.title())
+
+    for r in allowed_roles:
+        val = r.value if hasattr(r, 'value') else str(r)
+        allowed_role_strs.append(val.title())
+        allowed_role_strs.append(val.upper())
+
     users = db.query(User).filter(
         User.account_status == AccountStatus.PENDING,
-        User.role.in_(allowed_roles_to_approve)
+        User.role.in_(allowed_role_strs)
     ).all()
     
     return users
