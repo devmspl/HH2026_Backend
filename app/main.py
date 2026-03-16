@@ -6,8 +6,30 @@ from app.db.base import Base
 from app.db.session import engine
 import app.models.user  # Import models to ensure they are registered
 
+from sqlalchemy import text
+
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+def run_migrations():
+    with engine.begin() as con:
+        # Chat Groups Migration
+        try:
+            con.execute(text("ALTER TABLE chat_groups ADD COLUMN group_type VARCHAR(50);"))
+        except Exception:
+            pass
+        try:
+            con.execute(text("ALTER TABLE chat_groups ADD COLUMN region_id INTEGER REFERENCES regions(id);"))
+        except Exception:
+            pass
+            
+        # User Role Migration (Enum to String) to fix InvalidTextRepresentation
+        try:
+            con.execute(text("ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;"))
+        except Exception:
+            pass
+
+run_migrations()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
