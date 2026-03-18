@@ -128,7 +128,7 @@ def _aggregate_national_crop_reports(
                 families_map[fn]["total_spoiled_responses"] += s_count
         except: continue
 
-    active_customers_total = total_system_farmers if total_system_farmers is not None else total_report_farmers
+    active_customers_total = total_system_farmers if total_system_farmers else total_report_farmers
     participating_customers_total = participating_farmers
     
     rows: List[general_schema.NationalCropRow] = []
@@ -517,7 +517,7 @@ def get_regional_crops_tally(
             agg[key]["yield_tonnes"] += yield_tonnes
 
 
-    active_customers_total = int(total_system_farmers)
+    active_customers_total = int(total_system_farmers) if total_system_farmers else int(total_report_farmers)
     participating_customers_total = int(participating_farmers)
     
     # Percentage against system total
