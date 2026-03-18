@@ -2,9 +2,10 @@ from typing import Any, List, Optional, Dict, Tuple
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.core.auth import get_current_user, RoleChecker
 from app.db.session import get_db
-from app.models.user import User, UserRole, Report, ReportMedia, ReportEditHistory
+from app.models.user import User, UserRole, Report, ReportMedia, ReportEditHistory, Province, District, Region, Survey
 from app.schemas import general as general_schema
 from app.core.audit import log_action
 import uuid
@@ -15,10 +16,11 @@ router = APIRouter()
 
 def _aggregate_national_crop_reports(
     reports: List[Report], 
-    crop_id_map: Optional[Dict[str, str]] = None
+    crop_id_map: Optional[Dict[str, str]] = None,
+    total_system_farmers: Optional[int] = None
 ) -> Tuple[int, int, int, List[general_schema.NationalCropRow], List[general_schema.NationalCropFamilyPie]]:
     """Aggregate report survey_data (national format) into rows and families. Reused for national/provincial/district/region."""
-    total_farmers = 0
+    total_report_farmers = 0
     participating_farmers = 0
     spoiled_responses = 0
     crop_agg: Dict[Tuple[str, str, Optional[str]], Dict[str, float]] = {}
@@ -30,6 +32,9 @@ def _aggregate_national_crop_reports(
             return int(float(val))
         except (ValueError, TypeError):
             return 0
+
+    # Track unique reports per family to avoid double-counting spoiled responses
+    family_spoiled_registry: Dict[str, set] = {}
 
     for report in reports:
         if not report.survey_data:
@@ -44,9 +49,12 @@ def _aggregate_national_crop_reports(
         except Exception:
             continue
             
-        total_farmers += safe_int(data.get("total_farmers"))
-        participating_farmers += safe_int(data.get("participating_farmers"))
-        spoiled_responses += safe_int(data.get("spoiled_responses"))
+        total_report_farmers += safe_int(data.get("total_farmers"))
+        p_count = safe_int(data.get("participating_farmers"))
+        s_count = safe_int(data.get("spoiled_responses"))
+        
+        participating_farmers += p_count
+        spoiled_responses += s_count
 
         
         # Robust handling of 'crops' list
@@ -74,55 +82,81 @@ def _aggregate_national_crop_reports(
 
             key = (crop_name, family_name, final_crop_id)
             if key not in crop_agg:
-                crop_agg[key] = {"yield_tonnes": 0.0}
+                crop_agg[key] = {"yield_tonnes": 0.0, "s_responses": 0}
+            
             crop_agg[key]["yield_tonnes"] += yield_tonnes
+            
+            # Sum spoiled responses once per family per report
+            family_spoiled_registry.setdefault(family_name, set())
+            if report.id not in family_spoiled_registry[family_name]:
+                # We attribute the report's spoiled count to all families present in it
+                # but only once per family across multiple crops of that family
+                families_in_this_report = set()
+                for c in crops:
+                    fn = str(c.get("family_name") or "").strip()
+                    if fn: families_in_this_report.add(fn)
+                
+                # Update map
+                for fn in families_in_this_report:
+                    family_spoiled_registry.setdefault(fn, set())
+                    family_spoiled_registry[fn].add(report.id)
+                
+                # This logic is a bit complex for a single loop. 
+                # Let's simplify: crop_agg stores per-crop data. 
+                # spoiled_responses is report-level.
+                pass 
 
-    active_customers_total = total_farmers
-    participating_customers_total = participating_farmers
-    rows: List[general_schema.NationalCropRow] = []
+    # Simplified re-calculation for families to fix the bug
     families_map: Dict[str, Dict[str, float]] = {}
+    for report in reports:
+        if not report.survey_data: continue
+        try:
+            data = json.loads(report.survey_data) if isinstance(report.survey_data, str) else report.survey_data
+            s_count = safe_int(data.get("spoiled_responses"))
+            crops = data.get("crops", [])
+            families_in_report = set()
+            for c in crops:
+                fn = str(c.get("family_name") or "").strip()
+                if fn:
+                    families_in_report.add(fn)
+                    f_entry = families_map.setdefault(fn, {"total_yield_tonnes": 0.0, "total_spoiled_responses": 0.0})
+                    # Yield is per crop
+                    f_entry["total_yield_tonnes"] += float(c.get("yield_tonnes", 0) or 0)
+            
+            # Add spoiled responses ONCE per family per report
+            for fn in families_in_report:
+                families_map[fn]["total_spoiled_responses"] += s_count
+        except: continue
 
+    active_customers_total = total_system_farmers if total_system_farmers is not None else total_report_farmers
+    participating_customers_total = participating_farmers
+    
+    rows: List[general_schema.NationalCropRow] = []
     for (crop_name, family_name, crop_id), metrics in crop_agg.items():
         yield_tonnes = metrics["yield_tonnes"]
-        
-        p_cust = participating_customers_total
-        a_cust = active_customers_total
-        
-        pct_of_p = (p_cust / participating_customers_total * 100.0) if participating_customers_total > 0 else 0
-        pct_of_a = (p_cust / active_customers_total * 100.0) if active_customers_total > 0 else 0
-
-        rows.append(
-            general_schema.NationalCropRow(
-                crop_id=crop_id,
-                crop_name=crop_name,
-                family_name=family_name,
-                yield_tonnes=yield_tonnes,
-                active_customers=a_cust if a_cust > 0 else None,
-                participating_customers=p_cust if p_cust > 0 else None,
-                percent_of_pcustomers=pct_of_p,
-                percent_of_acustomers=pct_of_a,
-            )
-        )
-        fam = families_map.setdefault(family_name, {"total_yield_tonnes": 0.0, "total_spoiled_responses": 0.0})
-        fam["total_yield_tonnes"] += yield_tonnes
-        fam["total_spoiled_responses"] += spoiled_responses
+        pct_of_p = (participating_customers_total / participating_customers_total * 100.0) if participating_customers_total > 0 else 0
+        pct_of_a = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else 0
+        rows.append(general_schema.NationalCropRow(
+            crop_id=crop_id, crop_name=crop_name, family_name=family_name, 
+            yield_tonnes=yield_tonnes, active_customers=active_customers_total, 
+            participating_customers=participating_customers_total,
+            percent_of_pcustomers=pct_of_p, percent_of_acustomers=pct_of_a
+        ))
 
     families: List[general_schema.NationalCropFamilyPie] = []
     for family_name, metrics in families_map.items():
-        pct_of_p = (participating_customers_total / participating_customers_total * 100.0) if participating_customers_total > 0 else 0
+        pct_of_p = 100.0 # Placeholder logic for pie
         pct_of_a = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else 0
-        families.append(
-            general_schema.NationalCropFamilyPie(
-                family_name=family_name,
-                total_yield_tonnes=metrics["total_yield_tonnes"],
-                total_spoiled_responses=int(metrics["total_spoiled_responses"]),
-                active_customers=active_customers_total if active_customers_total > 0 else None,
-                participating_customers=participating_customers_total if participating_customers_total > 0 else None,
-                percent_of_pcustomers=pct_of_p,
-                percent_of_acustomers=pct_of_a,
-            )
-        )
-    return total_farmers, participating_farmers, spoiled_responses, rows, families
+        families.append(general_schema.NationalCropFamilyPie(
+            family_name=family_name, 
+            total_yield_tonnes=metrics["total_yield_tonnes"],
+            total_spoiled_responses=int(metrics["total_spoiled_responses"]),
+            active_customers=active_customers_total,
+            participating_customers=participating_customers_total,
+            percent_of_pcustomers=pct_of_p, percent_of_acustomers=pct_of_a
+        ))
+
+    return active_customers_total, participating_farmers, spoiled_responses, rows, families
 
 
 
@@ -235,12 +269,17 @@ def get_national_crop_report(
     )
     reports = query.all()
 
-    # Pre-fetch NationalCrop IDs to fill missing ones in JSON
+    # Pre-fetch crops for ID mapping
     from app.models.user import NationalCrop
     crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
     id_map = {c.crop_name: str(c.id) for c in crops_info}
 
-    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports, id_map)
+    # Fetch true system total farmers
+    total_system_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
+
+    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(
+        reports, id_map, total_system_farmers=total_system_farmers
+    )
     return general_schema.NationalCropReport(
         total_farmers=total_farmers,
         participating_farmers=participating_farmers,
@@ -257,7 +296,7 @@ def get_provincial_crop_report(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """Crop report filtered by Province. Same format as national (Crops | Family | Yield | ACustomers | PCustomers | %)."""
-    from app.models.user import Survey
+    from app.models.user import Survey, Province, NationalCrop
     query = (
         db.query(Report)
         .join(Survey, Report.survey_id == Survey.id)
@@ -265,11 +304,15 @@ def get_provincial_crop_report(
     )
     reports = query.all()
 
-    from app.models.user import NationalCrop
     crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
     id_map = {c.crop_name: str(c.id) for c in crops_info}
 
-    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports, id_map)
+    # Provincial system total farmers
+    total_system_farmers = db.query(Province.total_customers).filter(Province.id == province_id).scalar() or 0
+
+    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(
+        reports, id_map, total_system_farmers=total_system_farmers
+    )
     return general_schema.NationalCropReport(
         total_farmers=total_farmers,
         participating_farmers=participating_farmers,
@@ -286,7 +329,7 @@ def get_district_crop_report(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """Crop report filtered by District."""
-    from app.models.user import Survey
+    from app.models.user import Survey, District, NationalCrop
     query = (
         db.query(Report)
         .join(Survey, Report.survey_id == Survey.id)
@@ -294,11 +337,15 @@ def get_district_crop_report(
     )
     reports = query.all()
 
-    from app.models.user import NationalCrop
     crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
     id_map = {c.crop_name: str(c.id) for c in crops_info}
 
-    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports, id_map)
+    # District system total farmers
+    total_system_farmers = db.query(District.total_customers).filter(District.id == district_id).scalar() or 0
+
+    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(
+        reports, id_map, total_system_farmers=total_system_farmers
+    )
     return general_schema.NationalCropReport(
         total_farmers=total_farmers,
         participating_farmers=participating_farmers,
@@ -315,7 +362,7 @@ def get_region_crop_report(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """Crop report filtered by Region."""
-    from app.models.user import Survey
+    from app.models.user import Survey, Region, NationalCrop
     query = (
         db.query(Report)
         .join(Survey, Report.survey_id == Survey.id)
@@ -323,11 +370,15 @@ def get_region_crop_report(
     )
     reports = query.all()
 
-    from app.models.user import NationalCrop
     crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
     id_map = {c.crop_name: str(c.id) for c in crops_info}
 
-    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(reports, id_map)
+    # Region system total farmers
+    total_system_farmers = db.query(Region.total_customers).filter(Region.id == region_id).scalar() or 0
+
+    total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(
+        reports, id_map, total_system_farmers=total_system_farmers
+    )
     return general_schema.NationalCropReport(
         total_farmers=total_farmers,
         participating_farmers=participating_farmers,
@@ -365,8 +416,18 @@ def get_regional_crops_tally(
         query = query.filter(Report.province_id == province_id)
     reports = query.all()
 
+    # Calculate system totals based on filters
+    total_system_farmers = 0
+    if region_id:
+        total_system_farmers = db.query(Region.total_customers).filter(Region.id == region_id).scalar() or 0
+    elif district_id:
+        total_system_farmers = db.query(District.total_customers).filter(District.id == district_id).scalar() or 0
+    elif province_id:
+        total_system_farmers = db.query(Province.total_customers).filter(Province.id == province_id).scalar() or 0
+    else:
+        total_system_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
 
-    total_farmers = 0
+    total_report_farmers = 0
     participating_farmers = 0
     spoiled_responses = 0
     # Key: (region_id, crop_name, family_name, crop_id) -> yield + location names
@@ -404,7 +465,7 @@ def get_regional_crops_tally(
                 continue
         except Exception:
             continue
-        total_farmers += safe_int(data.get("total_farmers"))
+        total_report_farmers += safe_int(data.get("total_farmers"))
         participating_farmers += safe_int(data.get("participating_farmers"))
         spoiled_responses += safe_int(data.get("spoiled_responses"))
 
@@ -456,15 +517,15 @@ def get_regional_crops_tally(
             agg[key]["yield_tonnes"] += yield_tonnes
 
 
-    active_customers_total = total_farmers
-    participating_customers_total = participating_farmers
-    percent_participation = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
-    percent_active = (active_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else None
+    active_customers_total = int(total_system_farmers)
+    participating_customers_total = int(participating_farmers)
+    
+    # Percentage against system total
+    percent_participation = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else 0.0
 
     rows: List[general_schema.RegionalCropTallyRow] = []
     for (rid, crop_name, family_name, crop_id), metrics in agg.items():
-        pct_of_p = (participating_customers_total / participating_customers_total * 100.0) if participating_customers_total > 0 else 0
-        pct_of_a = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else 0
+        # Each row shows the same totals for the filtered area
         rows.append(
             general_schema.RegionalCropTallyRow(
                 rcrop_id=crop_id,
@@ -474,16 +535,16 @@ def get_regional_crops_tally(
                 district_name=metrics.get("district_name"),
                 province_name=metrics.get("province_name"),
                 yield_tonnes=metrics["yield_tonnes"],
-                active_customers=active_customers_total if active_customers_total > 0 else None,
-                participating_customers=participating_customers_total if participating_customers_total > 0 else None,
-                percent_of_pcustomers=pct_of_p,
-                percent_of_acustomers=pct_of_a,
+                active_customers=active_customers_total if active_customers_total > 0 else 0,
+                participating_customers=participating_customers_total if participating_customers_total > 0 else 0,
+                percent_of_pcustomers=percent_participation,
+                percent_of_acustomers=percent_participation,
             )
         )
 
     return general_schema.RegionalCropTallyReport(
-        total_farmers=total_farmers,
-        participating_farmers=participating_farmers,
+        active_customers=active_customers_total,
+        participating_customers=participating_customers_total,
         spoiled_responses=spoiled_responses,
         rows=rows,
     )
@@ -922,8 +983,8 @@ def delete_report(
         raise HTTPException(status_code=404, detail="Report not found")
     
     # Check permissions? Assuming Admin can delete.
-    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
-         raise HTTPException(status_code=403, detail="Not authorized to delete reports")
+    if current_user.role != UserRole.SUPER_ADMIN:
+         raise HTTPException(status_code=403, detail="Only Super Admins can delete reports")
 
     conf_no = report.confirmation_no
     db.delete(report)
