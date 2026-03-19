@@ -103,6 +103,72 @@ def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user:
             updated_count += 1
             
     db.commit()
+    
+    # --- New Geographic/Role Groups Sync ---
+    
+    # 1. Global Group
+    global_group = db.query(ChatGroup).filter(ChatGroup.group_type == "GLOBAL").first()
+    all_users = db.query(User).filter(User.is_deleted == False).all()
+    if not global_group:
+        super_admin = db.query(User).filter(User.role == "SUPER_ADMIN", User.is_deleted == False).first()
+        if super_admin:
+            global_group = ChatGroup(name="Global Group", manager_id=super_admin.id, group_type="GLOBAL")
+            global_group.members = all_users
+            db.add(global_group)
+            created_count += 1
+    else:
+        global_group.members = all_users
+        updated_count += 1
+
+    # 2. National Group (National + Provincial users)
+    national_group = db.query(ChatGroup).filter(ChatGroup.group_type == "NATIONAL").first()
+    national_provincial_users = db.query(User).filter(
+        User.role.in_(["NATIONAL", "PROVINCIAL"]),
+        User.is_deleted == False
+    ).all()
+    if national_provincial_users:
+        if not national_group:
+            # pick a manager (any national user)
+            nat_manager = next((u for u in national_provincial_users if str(u.role).upper() == "NATIONAL"), national_provincial_users[0])
+            national_group = ChatGroup(name="National Group", manager_id=nat_manager.id, group_type="NATIONAL")
+            national_group.members = national_provincial_users
+            db.add(national_group)
+            created_count += 1
+        else:
+            national_group.members = national_provincial_users
+            updated_count += 1
+
+    # 3. Provincial Groups (Per Province: Provincial + District users)
+    from app.models.user import Province
+    provinces = db.query(Province).all()
+    for province in provinces:
+        prov_group = db.query(ChatGroup).filter(
+            ChatGroup.group_type == "PROVINCIAL",
+            ChatGroup.name == f"Province - {province.name}"
+        ).first()
+        
+        prov_dist_users = db.query(User).filter(
+            User.province_id == province.id,
+            User.role.in_(["PROVINCIAL", "DISTRICT"]),
+            User.is_deleted == False
+        ).all()
+        
+        if prov_dist_users:
+            if not prov_group:
+                prov_manager = next((u for u in prov_dist_users if str(u.role).upper() == "PROVINCIAL"), prov_dist_users[0])
+                prov_group = ChatGroup(
+                    name=f"Province - {province.name}", 
+                    manager_id=prov_manager.id, 
+                    group_type="PROVINCIAL"
+                )
+                prov_group.members = prov_dist_users
+                db.add(prov_group)
+                created_count += 1
+            else:
+                prov_group.members = prov_dist_users
+                updated_count += 1
+
+    db.commit()
     return {
         "message": f"Auto-sync complete: Created {created_count} groups, Updated {updated_count} groups.", 
         "created": created_count,

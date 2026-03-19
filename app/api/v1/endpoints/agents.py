@@ -80,12 +80,13 @@ def read_agents(
         # Filter by string match
         query = query.filter(User.role.in_(allowed_role_strs))
         
-        # Exclude SUPER_ADMIN from the visible list for everyone
-        query = query.filter(
-            User.role != UserRole.SUPER_ADMIN.value,
-            User.role != "SUPER_ADMIN",
-            User.role != "Super_Admin" # case safety
-        )
+        # Exclude SUPER_ADMIN from the visible list for everyone EXCEPT SUPER_ADMIN
+        if str(current_user.role).upper() not in ["SUPER_ADMIN", "SUPER_ADMIN", "SUPER_ADMIN"]:
+            query = query.filter(
+                User.role != UserRole.SUPER_ADMIN.value,
+                User.role != "SUPER_ADMIN",
+                User.role != "Super_Admin" # case safety
+            )
     else:
         # Non-admins only see their recursive subordinates
         to_process = [current_user.id]
@@ -101,6 +102,38 @@ def read_agents(
                     sub_ids.append(sid)
                     to_process.append(sid)
                     processed.add(sid)
+                    
+        # --- Geographic Visibility Overrides ---
+        r = str(current_user.role).upper()
+        extra_users = []
+        if r == "NATIONAL":
+            extra_users = db.query(User.id).filter(
+                User.role.in_(["PROVINCIAL", "Provincial"]),
+                User.is_deleted == False
+            ).all()
+        elif r == "PROVINCIAL" and current_user.province_id:
+            extra_users = db.query(User.id).filter(
+                User.province_id == current_user.province_id,
+                User.role.in_(["DISTRICT", "District"]),
+                User.is_deleted == False
+            ).all()
+        elif r == "DISTRICT" and current_user.district_id:
+            extra_users = db.query(User.id).filter(
+                User.district_id == current_user.district_id,
+                User.role.in_(["REGION", "Region", "CAMP", "Camp"]),
+                User.is_deleted == False
+            ).all()
+        elif r == "REGION" and current_user.region_id:
+            extra_users = db.query(User.id).filter(
+                User.region_id == current_user.region_id,
+                User.role.in_(["REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
+                User.is_deleted == False
+            ).all()
+            
+        for eu in extra_users:
+            if eu[0] not in sub_ids:
+                sub_ids.append(eu[0])
+        # ----------------------------------------
         
         if not sub_ids:
             return [] # No subordinates
