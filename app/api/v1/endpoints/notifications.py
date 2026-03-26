@@ -203,7 +203,7 @@ def get_config(key: str, db: Session = Depends(get_db)):
 def save_config(
     payload: ConfigSave,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR])),
+    current_user: User = Depends(RoleChecker([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.PROVINCIAL])),
 ):
     config = db.query(SystemConfiguration).filter(SystemConfiguration.key == payload.key).first()
     if config:
