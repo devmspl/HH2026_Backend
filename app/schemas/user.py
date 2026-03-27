@@ -27,6 +27,14 @@ class UserBase(BaseModel):
     district_id: Optional[int] = None
     region_id: Optional[int] = None
     camp_id: Optional[int] = None
+    
+    from pydantic import field_validator
+    @field_validator('role', mode='before')
+    @classmethod
+    def role_to_upper(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.strip().upper()
+        return v
 
 # Properties to receive via API on creation (strict email on input)
 class UserCreate(UserBase):

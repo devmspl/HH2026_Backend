@@ -143,6 +143,7 @@ def get_unread_count(db: Session = Depends(get_db), current_user: User = Depends
 
 @router.post("/send")
 def send_notification(payload: NotificationSend, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    is_admin = current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
     target_users = []
     
     if payload.recipient_type == 'individual':
@@ -155,15 +156,36 @@ def send_notification(payload: NotificationSend, db: Session = Depends(get_db), 
             target_users.append(recipient)
             
     elif payload.recipient_type == 'allAgents':
-        target_users = db.query(User).filter(User.role == "Agent").all()
+        query = db.query(User).filter(User.role.in_(["Agent", "AGENT"]))
+        if not is_admin:
+            if current_user.role == UserRole.CAMP:
+                query = query.filter(User.camp_id == current_user.camp_id)
+            elif current_user.role == UserRole.REGION:
+                query = query.filter(User.region_id == current_user.region_id)
+        target_users = query.all()
         
     elif payload.recipient_type == 'byRole':
-        target_users = db.query(User).filter(User.role == payload.recipient_value).all()
+        query = db.query(User).filter(User.role == payload.recipient_value)
+        if not is_admin:
+            if current_user.role == UserRole.CAMP:
+                query = query.filter(User.camp_id == current_user.camp_id)
+            elif current_user.role == UserRole.REGION:
+                query = query.filter(User.region_id == current_user.region_id)
+        target_users = query.all()
         
     elif payload.recipient_type == 'byRegion':
-        # Search in the 'location' field or a dedicated region field if available
-        # For now, searching 'location'
-        target_users = db.query(User).filter(User.location.ilike(f"%{payload.recipient_value}%")).all()
+        # Non-admins can only notify within their own region
+        region_val = payload.recipient_value
+        query = db.query(User)
+        if not is_admin:
+            if current_user.region_id:
+                query = query.filter(User.region_id == current_user.region_id)
+            else:
+                # No region assigned, cannot broadcast by region
+                query = query.filter(User.id == -1) 
+        else:
+             query = query.filter(User.location.ilike(f"%{region_val}%") | User.region.has(name=region_val))
+        target_users = query.all()
     
     if not target_users:
         # Fallback to current user if nothing found for demo purposes

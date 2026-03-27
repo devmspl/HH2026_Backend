@@ -66,7 +66,8 @@ def get_customers(
     Camp users see only customers assigned to them (assigned_camp_user_id = current_user.id).
     """
     query = db.query(Customer)
-    if current_user.role == UserRole.CAMP:
+    user_role = str(current_user.role).upper()
+    if user_role == UserRole.CAMP.value:
         query = query.filter(Customer.assigned_camp_user_id == current_user.id)
     customers = query.offset(skip).limit(limit).all()
     return [_customer_to_dict(c) for c in customers]
@@ -94,9 +95,14 @@ def create_customer(
         if current_count >= CAMP_USER_MAX_CUSTOMERS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Camp users can have at most {CAMP_USER_MAX_CUSTOMERS} customers. You have {current_count}.",
+                detail=f"Camp users can have at most {CAMP_USER_MAX_CUSTOMERS} customers in their list. You have {current_count}.",
             )
         data["assigned_camp_user_id"] = current_user.id
+        # Ensure it belongs to their camp
+        data["camp_id"] = current_user.camp_id
+        data["region_id"] = current_user.region_id
+        data["district_id"] = current_user.district_id
+        data["province_id"] = current_user.province_id
 
     cnic_val = (payload.cnic and str(payload.cnic).strip()) or None
     if cnic_val:
@@ -166,10 +172,10 @@ def update_customer(
         raise HTTPException(status_code=404, detail="Customer not found")
 
     if current_user.role == UserRole.CAMP:
-        if customer.assigned_camp_user_id != current_user.id:
+        if customer.camp_id != current_user.camp_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only edit customers assigned to you.",
+                detail="You can only edit customers within your camp.",
             )
 
     data = payload.model_dump(exclude_unset=True)
@@ -206,7 +212,7 @@ def get_customer(
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    if current_user.role == UserRole.CAMP and customer.assigned_camp_user_id != current_user.id:
+    if current_user.role == UserRole.CAMP and customer.camp_id != current_user.camp_id:
         raise HTTPException(status_code=404, detail="Customer not found")
     return _customer_to_dict(customer)
 
@@ -248,8 +254,18 @@ async def bulk_upload_customers(
         last_cust = db.query(Customer).order_by(Customer.id.desc()).first()
         next_base_num = (last_cust.id + 1) if last_cust else 1
         processed_count = 0
+        
+        user_role = str(current_user.role).upper()
+        current_user_count = 0
+        if user_role == UserRole.CAMP.value:
+            current_user_count = db.query(Customer).filter(
+                Customer.assigned_camp_user_id == current_user.id
+            ).count()
 
         for row in reader:
+            if user_role == UserRole.CAMP.value and (current_user_count + processed_count) >= CAMP_USER_MAX_CUSTOMERS:
+                 # Stop importing once limit is reached
+                 break
             # Case-insensitive row access
             row = {k.lower(): v for k, v in row.items()}
             # Skip empty rows
@@ -303,8 +319,13 @@ async def bulk_upload_customers(
             )
             
             # Apply Camp User assignment
-            if current_user.role == UserRole.CAMP:
+            user_role = str(current_user.role).upper()
+            if user_role == UserRole.CAMP.value:
                 customer.assigned_camp_user_id = current_user.id
+                customer.camp_id = current_user.camp_id
+                customer.region_id = current_user.region_id
+                customer.district_id = current_user.district_id
+                customer.province_id = current_user.province_id
             else:
                 # If not CAMP user, maybe allow setting it from CSV
                 c_user_id = get_int(row.get('assigned_camp_user_id', row.get('camp_user_id')))
@@ -349,8 +370,8 @@ def delete_customer(
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    if current_user.role == UserRole.CAMP and customer.assigned_camp_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="You can only delete customers assigned to you.")
+    if current_user.role == UserRole.CAMP and customer.camp_id != current_user.camp_id:
+        raise HTTPException(status_code=403, detail="You can only delete customers within your camp.")
     
     customer_name = customer.full_name
     db.delete(customer)

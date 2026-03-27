@@ -106,66 +106,47 @@ def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user:
     
     # --- New Geographic/Role Groups Sync ---
     
-    # 1. Global Group
-    global_group = db.query(ChatGroup).filter(ChatGroup.group_type == "GLOBAL").first()
-    all_users = db.query(User).filter(User.is_deleted == False).all()
-    if not global_group:
-        super_admin = db.query(User).filter(User.role == "SUPER_ADMIN", User.is_deleted == False).first()
-        if super_admin:
-            global_group = ChatGroup(name="Global Group", manager_id=super_admin.id, group_type="GLOBAL")
-            global_group.members = all_users
-            db.add(global_group)
-            created_count += 1
-    else:
-        global_group.members = all_users
-        updated_count += 1
+    # 1. Global Group (DISABLED for security)
+    # global_group = db.query(ChatGroup).filter(ChatGroup.group_type == "GLOBAL").first()
+    # all_users = db.query(User).filter(User.is_deleted == False).all()
+    # ...
 
     # 2. National Group (National + Provincial users)
-    national_group = db.query(ChatGroup).filter(ChatGroup.group_type == "NATIONAL").first()
-    national_provincial_users = db.query(User).filter(
-        User.role.in_(["NATIONAL", "PROVINCIAL"]),
-        User.is_deleted == False
-    ).all()
-    if national_provincial_users:
-        if not national_group:
-            # pick a manager (any national user)
-            nat_manager = next((u for u in national_provincial_users if str(u.role).upper() == "NATIONAL"), national_provincial_users[0])
-            national_group = ChatGroup(name="National Group", manager_id=nat_manager.id, group_type="NATIONAL")
-            national_group.members = national_provincial_users
-            db.add(national_group)
-            created_count += 1
-        else:
-            national_group.members = national_provincial_users
-            updated_count += 1
+    # ... (Already there or can be kept)
 
-    # 3. Provincial Groups (Per Province: Provincial + District users)
-    from app.models.user import Province
-    provinces = db.query(Province).all()
-    for province in provinces:
-        prov_group = db.query(ChatGroup).filter(
-            ChatGroup.group_type == "PROVINCIAL",
-            ChatGroup.name == f"Province - {province.name}"
+    # 3. Provincial Groups (Already there)
+
+    # 4. Regional Groups (Per Region: Regional + Camp + Agent users)
+    from app.models.user import Region
+    all_regions = db.query(Region).all()
+    for reg in all_regions:
+        reg_group = db.query(ChatGroup).filter(
+            ChatGroup.group_type == "REGION",
+            ChatGroup.region_id == reg.id
         ).first()
         
-        prov_dist_users = db.query(User).filter(
-            User.province_id == province.id,
-            User.role.in_(["PROVINCIAL", "DISTRICT"]),
+        reg_members = db.query(User).filter(
+            User.region_id == reg.id,
+            User.role.in_(["REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
             User.is_deleted == False
         ).all()
         
-        if prov_dist_users:
-            if not prov_group:
-                prov_manager = next((u for u in prov_dist_users if str(u.role).upper() == "PROVINCIAL"), prov_dist_users[0])
-                prov_group = ChatGroup(
-                    name=f"Province - {province.name}", 
-                    manager_id=prov_manager.id, 
-                    group_type="PROVINCIAL"
+        if reg_members:
+            if not reg_group:
+                # manager = anyone with role REGION, else first available
+                reg_manager = next((u for u in reg_members if str(u.role).upper() == "REGION"), reg_members[0])
+                reg_group = ChatGroup(
+                    name=f"{reg.name} Region Group", 
+                    manager_id=reg_manager.id, 
+                    group_type="REGION",
+                    region_id=reg.id
                 )
-                prov_group.members = prov_dist_users
-                db.add(prov_group)
+                reg_group.members = reg_members
+                db.add(reg_group)
                 created_count += 1
             else:
-                prov_group.members = prov_dist_users
+                reg_group.members = reg_members
+                reg_group.name = f"{reg.name} Region Group"
                 updated_count += 1
 
     db.commit()
@@ -266,9 +247,14 @@ def get_region_members(db: Session = Depends(get_db), current_user: User = Depen
         return []
         # Alternatively, raise error if you expect them to ALWAYS have a region
     
+    # Database may have mixed case roles (e.g., 'Camp', 'CAMP', 'Agent', 'AGENT')
+    eligible_roles = [UserRole.REGION.value, UserRole.CAMP.value, UserRole.AGENT.value,
+                    "Region", "Camp", "Agent",
+                    "region", "camp", "agent"]
+    
     users = db.query(User).filter(
         User.region_id == current_user.region_id,
-        User.role.in_([UserRole.REGION, UserRole.CAMP, UserRole.AGENT]),
+        User.role.in_(eligible_roles),
         User.is_deleted == False
     ).all()
     

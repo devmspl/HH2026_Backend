@@ -21,8 +21,9 @@ def get_dashboard_stats(
     from sqlalchemy import or_
     
     # Hierarchy and Location filtering logic
-    is_admin = current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
-    is_executive = current_user.role == UserRole.EXECUTIVE
+    is_admin = current_user.is_superuser or str(current_user.role).upper() in [UserRole.SUPER_ADMIN.value, UserRole.ADMINISTRATOR.value]
+    cur_role = str(current_user.role).upper()
+    is_executive = cur_role == UserRole.EXECUTIVE.value
     
     user_ids_in_hierarchy = None
     
@@ -169,11 +170,32 @@ def get_gis_tracking(
     """
     Get live coordinates of agents.
     """
-    agents = db.query(User).all()
+    # Hierarchy and Location filtering logic
+    is_admin = current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
+    
+    query = db.query(User).filter(User.is_deleted == False)
+    
+    if not is_admin:
+        r = str(current_user.role).upper()
+        if r == UserRole.CAMP.value and current_user.camp_id is not None:
+            query = query.filter(User.camp_id == current_user.camp_id)
+        elif r == UserRole.REGION.value and current_user.region_id is not None:
+            query = query.filter(User.region_id == current_user.region_id)
+        elif r == UserRole.DISTRICT.value and current_user.district_id is not None:
+            query = query.filter(User.district_id == current_user.district_id)
+        elif r == UserRole.PROVINCIAL.value and current_user.province_id is not None:
+            query = query.filter(User.province_id == current_user.province_id)
+        else:
+            # Fallback: only see themselves/subordinates if no geo-id set
+            # For GIS we might just want to show current user and their children
+            query = query.filter((User.id == current_user.id) | (User.parent_id == current_user.id))
+
+    agents = query.all()
     results = [
         {
             "id": a.id,
             "name": a.full_name,
+            "role": a.role,
             "lat": a.last_lat,
             "lng": a.last_lng,
             "status": "online" if a.is_active else "offline",
@@ -198,9 +220,18 @@ def get_agents_with_distance(
 
     station = _get_station_location(db)
     query = db.query(User).filter(User.is_deleted == False)
-    # Region user sees only agents in their region
-    if current_user.role == UserRole.REGION and current_user.region_id is not None:
+    
+    # Geographic filtering
+    r = str(current_user.role).upper()
+    if r == UserRole.CAMP.value and current_user.camp_id is not None:
+        query = query.filter(User.camp_id == current_user.camp_id)
+    elif r == UserRole.REGION.value and current_user.region_id is not None:
         query = query.filter(User.region_id == current_user.region_id)
+    elif r == UserRole.DISTRICT.value and current_user.district_id is not None:
+        query = query.filter(User.district_id == current_user.district_id)
+    elif r == UserRole.PROVINCIAL.value and current_user.province_id is not None:
+        query = query.filter(User.province_id == current_user.province_id)
+        
     agents = query.all()
     results = []
     for a in agents:
@@ -258,9 +289,17 @@ def get_media(
     from app.models.user import ReportMedia, Report
     query = db.query(ReportMedia).join(Report)
     
-    # Permission Logic: Agents only see their own media
-    if current_user.role == UserRole.AGENT:
+    # Permission Logic: 
+    r = str(current_user.role).upper()
+    # Agents only see their own media
+    if r == UserRole.AGENT.value:
         query = query.filter(Report.agent_id == current_user.id)
+    # Camp users only see media from their camp
+    elif r == UserRole.CAMP.value and current_user.camp_id is not None:
+        query = query.filter(Report.camp_id == current_user.camp_id)
+    # Higher roles can see within their geography
+    elif r == UserRole.REGION.value and current_user.region_id is not None:
+        query = query.filter(Report.region_id == current_user.region_id)
     
     # Optional Filters
     if agent_id:
