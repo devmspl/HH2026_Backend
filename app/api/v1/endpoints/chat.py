@@ -59,6 +59,15 @@ def fix_database_errors(db: Session = Depends(get_db)):
 
 @router.post("/groups", response_model=general_schema.ChatGroup)
 def create_chat_group(payload: GroupCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # 1. Determine if this is a Direct Chat (1:1) vs a Group Chat
+    # Direct chat has only 1 other member in member_ids
+    is_direct_chat = len(payload.member_ids or []) == 1
+    
+    # 2. Apply permissions: Only Admin can create Groups (3+ members). Anyone can create Direct (2 members).
+    if not is_direct_chat:
+        if not current_user.is_superuser and current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+            raise HTTPException(status_code=403, detail="Only Administrators can create multi-member chat groups")
+
     db_group = ChatGroup(name=payload.name, manager_id=current_user.id)
     
     # Add members
@@ -75,14 +84,15 @@ def create_chat_group(payload: GroupCreate, db: Session = Depends(get_db), curre
 @router.post("/groups/auto-create")
 def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
-    Automatically create or update chat groups for every manager and their subordinates.
+    Automatically create or update chat groups for every manager and their subordinates, 
+    and system-wide geographic groups (National, Provincial, District, Regional, Camp).
     """
-    # 1. Get all managers (users who are parents to other users)
-    managers = db.query(User).filter(User.subordinates.any()).all()
-    
+    from app.services.chat_service import sync_all_groups
     created_count = 0
     updated_count = 0
     
+    # 1. Team Groups (Manager + Subordinates)
+    managers = db.query(User).filter(User.subordinates.any()).all()
     for manager in managers:
         group_name = f"{manager.full_name}'s Team"
         existing_group = db.query(ChatGroup).filter(
@@ -90,68 +100,22 @@ def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user:
             ChatGroup.name == group_name
         ).first()
         
-        # Desired members based on current hierarchy
         current_members = [manager] + manager.subordinates
-        
         if not existing_group:
-            # Create new group
             new_group = ChatGroup(name=group_name, manager_id=manager.id)
             new_group.members = current_members
             db.add(new_group)
             created_count += 1
         else:
-            # Update existing group members to reflect the current subordinates
             existing_group.members = current_members
             updated_count += 1
             
-    db.commit()
+    # 2. System-wide Geographic/Role Groups (National, province, district, region, camp)
+    s_created, s_updated = sync_all_groups(db)
     
-    # --- New Geographic/Role Groups Sync ---
-    
-    # 1. Global Group (DISABLED for security)
-    # global_group = db.query(ChatGroup).filter(ChatGroup.group_type == "GLOBAL").first()
-    # all_users = db.query(User).filter(User.is_deleted == False).all()
-    # ...
+    created_count += s_created
+    updated_count += s_updated
 
-    # 2. National Group (National + Provincial users)
-    # ... (Already there or can be kept)
-
-    # 3. Provincial Groups (Already there)
-
-    # 4. Regional Groups (Per Region: Regional + Camp + Agent users)
-    from app.models.user import Region
-    all_regions = db.query(Region).all()
-    for reg in all_regions:
-        reg_group = db.query(ChatGroup).filter(
-            ChatGroup.group_type == "REGION",
-            ChatGroup.region_id == reg.id
-        ).first()
-        
-        reg_members = db.query(User).filter(
-            User.region_id == reg.id,
-            User.role.in_(ELIGIBLE_REGION_ROLES),
-            User.is_deleted == False
-        ).all()
-        
-        if reg_members:
-            if not reg_group:
-                # manager = anyone with role REGION, else first available
-                reg_manager = next((u for u in reg_members if str(u.role).upper() == "REGION"), reg_members[0])
-                reg_group = ChatGroup(
-                    name=f"{reg.name} Region Group", 
-                    manager_id=reg_manager.id, 
-                    group_type="REGION",
-                    region_id=reg.id
-                )
-                reg_group.members = reg_members
-                db.add(reg_group)
-                created_count += 1
-            else:
-                reg_group.members = reg_members
-                reg_group.name = f"{reg.name} Region Group"
-                updated_count += 1
-
-    db.commit()
     return {
         "message": f"Auto-sync complete: Created {created_count} groups, Updated {updated_count} groups.", 
         "created": created_count,
@@ -202,7 +166,8 @@ def update_chat_group(group_id: int, payload: GroupCreate, db: Session = Depends
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
-    if group.manager_id != current_user.id and not current_user.is_superuser:
+    # Only Admin/SuperAdmin or the group manager can update groups
+    if not current_user.is_superuser and current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR] and group.manager_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     group.name = payload.name

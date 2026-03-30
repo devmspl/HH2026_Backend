@@ -356,6 +356,10 @@ def create_agent(
     
     log_action(db, current_user.id, "CREATE_USER", f"Created user {db_obj.full_name} ({db_obj.role}). Status: {account_status}")
     
+    # Auto-assign to groups
+    from app.services.chat_service import sync_user_groups
+    sync_user_groups(db, db_obj)
+    
     return db_obj
 
 @router.get("/creatable-roles")
@@ -457,6 +461,10 @@ def update_agent(
     db.refresh(agent)
     
     log_action(db, current_user.id, "UPDATE_USER", f"Updated user {agent.full_name}. Data: {update_data}")
+    
+    # Sync groups in case of role/location change
+    from app.services.chat_service import sync_user_groups
+    sync_user_groups(db, agent)
     
     return agent
 

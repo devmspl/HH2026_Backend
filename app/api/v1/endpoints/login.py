@@ -49,7 +49,9 @@ def login_access_token(
     # Update last_seen timestamp
     user.last_seen = datetime.utcnow()
     db.add(user)
-    db.commit()
+    # Sync groups on login to ensure memberships are up-to-date
+    from app.services.chat_service import sync_user_groups
+    sync_user_groups(db, user)
     
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
