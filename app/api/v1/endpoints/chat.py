@@ -17,7 +17,9 @@ class GroupCreate(BaseModel):
     name: str
     member_ids: List[int]
 
-from sqlalchemy import text
+from sqlalchemy import text, func
+
+ELIGIBLE_REGION_ROLES = ["REGION", "Region", "region", "CAMP", "Camp", "camp", "AGENT", "Agent", "agent"]
 
 @router.get("/groups", response_model=List[general_schema.ChatGroup])
 def get_chat_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -127,7 +129,7 @@ def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user:
         
         reg_members = db.query(User).filter(
             User.region_id == reg.id,
-            User.role.in_(["REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
+            User.role.in_(ELIGIBLE_REGION_ROLES),
             User.is_deleted == False
         ).all()
         
@@ -245,16 +247,10 @@ def get_region_members(db: Session = Depends(get_db), current_user: User = Depen
     """
     if not current_user.region_id:
         return []
-        # Alternatively, raise error if you expect them to ALWAYS have a region
-    
-    # Database may have mixed case roles (e.g., 'Camp', 'CAMP', 'Agent', 'AGENT')
-    eligible_roles = [UserRole.REGION.value, UserRole.CAMP.value, UserRole.AGENT.value,
-                    "Region", "Camp", "Agent",
-                    "region", "camp", "agent"]
-    
+
     users = db.query(User).filter(
         User.region_id == current_user.region_id,
-        User.role.in_(eligible_roles),
+        User.role.in_(ELIGIBLE_REGION_ROLES),
         User.is_deleted == False
     ).all()
     
@@ -292,7 +288,7 @@ def create_region_group(db: Session = Depends(get_db), current_user: User = Depe
     # 3. sync members
     members = db.query(User).filter(
         User.region_id == current_user.region_id,
-        User.role.in_([UserRole.REGION, UserRole.CAMP, UserRole.AGENT]),
+        User.role.in_(ELIGIBLE_REGION_ROLES),
         User.is_deleted == False
     ).all()
     
