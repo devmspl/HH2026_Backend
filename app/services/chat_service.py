@@ -25,7 +25,13 @@ def sync_user_groups(db: Session, user: User):
         province = db.query(Province).filter(Province.id == user.province_id).first()
         if province:
             prov_group = db.query(ChatGroup).filter(ChatGroup.group_type == "PROVINCE", ChatGroup.name.like(f"%{province.name}%")).first()
-            if prov_group and user not in prov_group.members:
+            if not prov_group:
+                # Create it if it doesn't exist
+                prov_group = ChatGroup(name=f"{province.name} Provincial Group", manager_id=user.id, group_type="PROVINCE")
+                db.add(prov_group)
+                db.flush()
+            
+            if user not in prov_group.members:
                 prov_group.members.append(user)
 
     # 3. District Group

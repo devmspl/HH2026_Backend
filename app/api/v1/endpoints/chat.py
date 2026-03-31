@@ -221,6 +221,24 @@ def get_region_members(db: Session = Depends(get_db), current_user: User = Depen
     
     return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id} for u in users]
 
+ELIGIBLE_DISTRICT_ROLES = ["REGION", "Region", "region", "CAMP", "Camp", "camp"]
+
+@router.get("/district-members", response_model=List[general_schema.RegionMember])
+def get_district_members(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Returns all regional and camp users belonging to the same district as the logged-in user.
+    """
+    if not current_user.district_id:
+        return []
+
+    users = db.query(User).filter(
+        User.district_id == current_user.district_id,
+        User.role.in_(ELIGIBLE_DISTRICT_ROLES),
+        User.is_deleted == False
+    ).all()
+    
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id} for u in users]
+
 @router.post("/region-group", response_model=general_schema.RegionGroupResponse)
 def create_region_group(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
