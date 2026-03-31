@@ -127,7 +127,9 @@ class RegionMember(BaseModel):
     id: int
     name: str
     role: str
-    region_id: Optional[int]
+    region_id: Optional[int] = None
+    district_id: Optional[int] = None
+    province_id: Optional[int] = None
     class Config:
         from_attributes = True
 

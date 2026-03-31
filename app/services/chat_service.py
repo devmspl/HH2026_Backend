@@ -11,14 +11,22 @@ def sync_user_groups(db: Session, user: User):
         return
 
     # 1. National Group
-    national_group = db.query(ChatGroup).filter(ChatGroup.group_type == "NATIONAL").first()
-    if national_group:
-        is_national_eligible = str(user.role).upper() in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]
-        if is_national_eligible and user not in national_group.members:
+    is_national_eligible = str(user.role).upper() in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL", "NATIONAL USER"]
+    if is_national_eligible:
+        national_group = db.query(ChatGroup).filter(ChatGroup.group_type == "NATIONAL").first()
+        if not national_group:
+            # Create it if it doesn't exist yet
+            national_group = ChatGroup(name="National HQ Group", manager_id=user.id, group_type="NATIONAL")
+            db.add(national_group)
+            db.flush()
+        
+        if user not in national_group.members:
             national_group.members.append(user)
-        elif not is_national_eligible and user in national_group.members:
-            if user in national_group.members:
-                national_group.members.remove(user)
+    else:
+        # If no longer eligible, remove
+        national_group = db.query(ChatGroup).filter(ChatGroup.group_type == "NATIONAL").first()
+        if national_group and user in national_group.members:
+            national_group.members.remove(user)
 
     # 2. Provincial Group
     if user.province_id:
