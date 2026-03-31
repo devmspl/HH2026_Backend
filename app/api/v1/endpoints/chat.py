@@ -221,7 +221,8 @@ def get_region_members(db: Session = Depends(get_db), current_user: User = Depen
     
     return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id} for u in users]
 
-ELIGIBLE_DISTRICT_ROLES = ["REGION", "Region", "region", "CAMP", "Camp", "camp"]
+ELIGIBLE_DISTRICT_ROLES = ["REGION", "Region", "region", "CAMP", "Camp", "camp", "Agent", "AGENT", "agent"]
+ELIGIBLE_PROVINCIAL_ROLES = ["DISTRICT", "District", "district", "District User", "DISTRICT USER"]
 
 @router.get("/district-members", response_model=List[general_schema.RegionMember])
 def get_district_members(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -237,7 +238,22 @@ def get_district_members(db: Session = Depends(get_db), current_user: User = Dep
         User.is_deleted == False
     ).all()
     
-    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id} for u in users]
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "district_id": u.district_id} for u in users]
+
+@router.get("/provincial-members", response_model=List[general_schema.RegionMember])
+def get_provincial_members(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Returns all district users (accessible by Provincial users).
+    """
+    # Note: Provincial users can see all District users in the system or same province 
+    # The requirement says "See all users where: role === 'district'"
+    
+    users = db.query(User).filter(
+        User.role.in_(ELIGIBLE_PROVINCIAL_ROLES),
+        User.is_deleted == False
+    ).all()
+    
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "district_id": u.district_id, "province_id": u.province_id} for u in users]
 
 @router.post("/region-group", response_model=general_schema.RegionGroupResponse)
 def create_region_group(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
