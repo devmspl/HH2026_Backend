@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from app.core.auth import get_current_user
 from app.db.session import get_db
-from app.models.user import User, UserRole, Province, District, Region, Camp, RegionalCrop, CropFamily, NationalCrop, Customer
+from app.models.user import User, UserRole, Province, District, Region, Camp, RegionalCrop, CropFamily, NationalCrop, Customer, Report
 
 router = APIRouter()
 
@@ -761,6 +761,40 @@ def delete_region(
     db.delete(region)
     db.commit()
     return {"message": "Region deleted"}
+
+@router.post("/regions/{region_id}/approve")
+def approve_region(
+    region_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Approve a region. Provincial or above only."""
+    user_role_upper = str(current_user.role).upper()
+    is_provincial = "PROVINCIAL" in user_role_upper
+    is_higher_admin = any(r in user_role_upper for r in ["NATIONAL", "SUPER_ADMIN", "ADMINISTRATOR"])
+    
+    if not (is_provincial or is_higher_admin):
+        raise HTTPException(
+            status_code=403, 
+            detail="Only Provincial or higher roles can approve regions"
+        )
+    
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+        
+    # Provincial users can only approve regions in their own province
+    if is_provincial:
+        district = db.query(District).filter(District.id == region.district_id).first()
+        if not district or district.province_id != current_user.province_id:
+            raise HTTPException(
+                status_code=403, 
+                detail="You can only approve regions in your province"
+            )
+    
+    region.is_approved = True
+    db.commit()
+    return {"message": f"Region '{region.name}' approved successfully", "is_approved": True}
 
 
 # ==================== Camp CRUD ====================

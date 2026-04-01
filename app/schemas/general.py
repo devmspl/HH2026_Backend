@@ -218,9 +218,12 @@ class RegionalCropTallyRow(BaseModel):
 
 class RegionalCropTallyReport(BaseModel):
     """Regional crops tally report (by region)."""
-    total_farmers: int
-    participating_farmers: int
+    active_customers: int
+    participating_customers: int
     spoiled_responses: int
+    total_camps: int
+    total_yield: float
+    total_reports: int
     rows: List[RegionalCropTallyRow]
 
 class TopFamilyRankRow(BaseModel):
@@ -248,3 +251,22 @@ class RegionDominance(BaseModel):
 class DominantCropMapResponse(BaseModel):
     by_province: List[ProvinceDominance]
     by_region: List[RegionDominance]
+
+class RegionCount(BaseModel):
+    id: int
+    name: str
+    count: int
+
+class RegionReportingStatus(BaseModel):
+    id: int
+    name: str
+    total_camps: int
+    submitted_camps: int
+    is_approved: bool
+    status: str # RED, ORANGE, BLUE, GREEN
+
+class DistrictSummary(BaseModel):
+    total_farmers: int
+    agents_by_region: List[RegionCount]
+    customers_by_region: List[RegionCount]
+    region_statuses: List[RegionReportingStatus]

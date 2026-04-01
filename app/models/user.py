@@ -244,6 +244,7 @@ class Region(Base):
     total_customers = Column(Integer, default=0)
     region_type = Column(String(100), nullable=True)
     main_crop_family_id = Column(Integer, ForeignKey("crop_families.id"), nullable=True)
+    is_approved = Column(Boolean, default=False)
     
     district = relationship("District")
     province = relationship("Province")

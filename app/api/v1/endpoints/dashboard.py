@@ -1,5 +1,5 @@
 from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.core.auth import get_current_user
@@ -324,3 +324,89 @@ def get_media(
             "created_at": item.report.created_at if item.report else None
         })
     return results
+
+@router.get("/district-summary", response_model=general_schema.DistrictSummary)
+def get_district_summary(
+    district_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Get District-level metrics and region-wise reporting status.
+    """
+    from app.models.user import Region, Camp, Customer, UserRole, District, Report
+    
+    # 1. Scope Determination
+    target_district_id = district_id or current_user.district_id
+    
+    if not target_district_id:
+        raise HTTPException(status_code=400, detail="District ID is required")
+        
+    # Permission check: District User can only see their own district
+    user_role_upper = str(current_user.role).upper()
+    if "DISTRICT" in user_role_upper:
+        if current_user.district_id != target_district_id:
+            raise HTTPException(status_code=403, detail="You can only view your own district's summary")
+    
+    # Permission check: Provincial User can see any district in their province
+    if "PROVINCIAL" in user_role_upper:
+        # Check if the district belongs to their province
+        dist = db.query(District).filter(District.id == target_district_id).first()
+        if not dist or dist.province_id != current_user.province_id:
+            raise HTTPException(status_code=403, detail="You can only view districts within your province")
+
+    # 2. Total Farmers in District
+    total_farmers = db.query(Customer).filter(Customer.district_id == target_district_id).count()
+
+    # 3. Agents grouped by Region
+    regions = db.query(Region).filter(Region.district_id == target_district_id).all()
+    agents_by_region = []
+    customers_by_region = []
+    region_statuses = []
+
+    for region in regions:
+        # Agents count
+        agent_count = db.query(User).filter(User.region_id == region.id, User.role == UserRole.AGENT).count()
+        agents_by_region.append({"id": region.id, "name": region.name, "count": agent_count})
+
+        # Customers count
+        customer_count = db.query(Customer).filter(Customer.region_id == region.id).count()
+        customers_by_region.append({"id": region.id, "name": region.name, "count": customer_count})
+
+        # 4. Region-wise Reporting Status
+        total_camps = db.query(Camp).filter(Camp.region_id == region.id).count()
+        
+        # A camp is "submitted" if it has at least one report? 
+        # Or let's group reports by camp_id and count distinct camp_ids
+        submitted_camps = db.query(Report.camp_id).filter(
+            Report.region_id == region.id,
+            Report.camp_id.isnot(None)
+        ).distinct().count()
+
+        # Status Logic
+        status = "RED"
+        if submitted_camps == 0:
+            status = "RED"
+        elif submitted_camps > 0 and submitted_camps < total_camps:
+            status = "ORANGE"
+        elif submitted_camps == total_camps:
+            if region.is_approved:
+                status = "GREEN"
+            else:
+                status = "BLUE"
+
+        region_statuses.append({
+            "id": region.id,
+            "name": region.name,
+            "total_camps": total_camps,
+            "submitted_camps": submitted_camps,
+            "is_approved": bool(region.is_approved),
+            "status": status
+        })
+
+    return {
+        "total_farmers": total_farmers,
+        "agents_by_region": agents_by_region,
+        "customers_by_region": customers_by_region,
+        "region_statuses": region_statuses
+    }

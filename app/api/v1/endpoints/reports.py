@@ -401,6 +401,18 @@ def get_regional_crops_tally(
     Uses reports from Regional Crops Survey; optional filter by region_id, district_id, or province_id.
     """
     from app.models.user import Survey, Region, District, Province
+    
+    # Requirement 1: Scope based on provided filters OR current user's location
+    eff_region_id = region_id
+    eff_district_id = district_id
+    eff_province_id = province_id
+    
+    # If no filters provided, auto-scope to user's location
+    if not (eff_region_id or eff_district_id or eff_province_id):
+        if current_user.region_id: eff_region_id = current_user.region_id
+        elif current_user.district_id: eff_district_id = current_user.district_id
+        elif current_user.province_id: eff_province_id = current_user.province_id
+
     query = (
         db.query(Report)
         .join(Survey, Report.survey_id == Survey.id)
@@ -408,24 +420,37 @@ def get_regional_crops_tally(
             (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey")
         )
     )
-    if region_id is not None:
-        query = query.filter(Report.region_id == region_id)
-    if district_id is not None:
-        query = query.filter(Report.district_id == district_id)
-    if province_id is not None:
-        query = query.filter(Report.province_id == province_id)
+    
+    if eff_region_id is not None:
+        query = query.filter(Report.region_id == eff_region_id)
+    if eff_district_id is not None:
+        query = query.filter(Report.district_id == eff_district_id)
+    if eff_province_id is not None:
+        query = query.filter(Report.province_id == eff_province_id)
+    
     reports = query.all()
 
-    # Calculate system totals based on filters
+    # Calculate system totals based on filtered scope
     total_system_farmers = 0
-    if region_id:
-        total_system_farmers = db.query(Region.total_customers).filter(Region.id == region_id).scalar() or 0
-    elif district_id:
-        total_system_farmers = db.query(District.total_customers).filter(District.id == district_id).scalar() or 0
-    elif province_id:
-        total_system_farmers = db.query(Province.total_customers).filter(Province.id == province_id).scalar() or 0
+    if eff_region_id:
+        total_system_farmers = db.query(Region.total_customers).filter(Region.id == eff_region_id).scalar() or 0
+    elif eff_district_id:
+        total_system_farmers = db.query(District.total_customers).filter(District.id == eff_district_id).scalar() or 0
+    elif eff_province_id:
+        total_system_farmers = db.query(Province.total_customers).filter(Province.id == eff_province_id).scalar() or 0
     else:
         total_system_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
+
+    # 1. Total Camps Count
+    from app.models.user import Camp
+    if eff_region_id:
+        total_camps = db.query(Camp).filter(Camp.region_id == eff_region_id).count()
+    elif eff_district_id:
+        total_camps = db.query(Camp).filter(Camp.district_id == eff_district_id).count()
+    elif eff_province_id:
+        total_camps = db.query(Camp).filter(Camp.province_id == eff_province_id).count()
+    else:
+        total_camps = db.query(Camp).count()
 
     total_report_farmers = 0
     participating_farmers = 0
@@ -444,6 +469,8 @@ def get_regional_crops_tally(
     rcrops_info = db.query(RegionalCrop.crop_name, RegionalCrop.id).all()
     for c in rcrops_info:
         id_map[str(c.crop_name).strip().lower()] = str(c.id)
+
+    total_yield = 0.0
 
     def safe_int(val):
         try:
@@ -499,6 +526,7 @@ def get_regional_crops_tally(
                 yield_tonnes = float(crop.get("yield_tonnes", 0) or 0)
             except (ValueError, TypeError):
                 yield_tonnes = 0.0
+            total_yield += yield_tonnes
             
             # Use ID from report or fallback to DB lookup
             final_id = str(crop_id) if crop_id is not None else None
@@ -546,6 +574,9 @@ def get_regional_crops_tally(
         active_customers=active_customers_total,
         participating_customers=participating_customers_total,
         spoiled_responses=spoiled_responses,
+        total_camps=total_camps,
+        total_yield=total_yield,
+        total_reports=len(reports),
         rows=rows,
     )
 
