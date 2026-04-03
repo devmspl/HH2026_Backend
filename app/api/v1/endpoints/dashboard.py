@@ -339,8 +339,15 @@ def get_district_summary(
     # 1. Scope Determination
     target_district_id = district_id or current_user.district_id
     
+    # NEW: Handle Provincial-wide view if no district specified
+    is_provincial_view = False
+    user_role_upper = str(current_user.role).upper()
+    
     if not target_district_id:
-        raise HTTPException(status_code=400, detail="District ID is required")
+        if "PROVINCIAL" in user_role_upper and current_user.province_id:
+            is_provincial_view = True
+        else:
+            raise HTTPException(status_code=400, detail="District ID is required")
         
     # Permission check: District User can only see their own district
     user_role_upper = str(current_user.role).upper()
@@ -355,11 +362,13 @@ def get_district_summary(
         if not dist or dist.province_id != current_user.province_id:
             raise HTTPException(status_code=403, detail="You can only view districts within your province")
 
-    # 2. Total Farmers in District
-    total_farmers = db.query(Customer).filter(Customer.district_id == target_district_id).count()
-
-    # 3. Agents grouped by Region
-    regions = db.query(Region).filter(Region.district_id == target_district_id).all()
+    # 2. Total Farmers in Scope
+    if is_provincial_view:
+        total_farmers = db.query(Customer).filter(Customer.province_id == current_user.province_id).count()
+        regions = db.query(Region).filter(Region.province_id == current_user.province_id).all()
+    else:
+        total_farmers = db.query(Customer).filter(Customer.district_id == target_district_id).count()
+        regions = db.query(Region).filter(Region.district_id == target_district_id).all()
     agents_by_region = []
     customers_by_region = []
     region_statuses = []
@@ -384,16 +393,16 @@ def get_district_summary(
         ).distinct().count()
 
         # Status Logic
-        status = "RED"
-        if submitted_camps == 0:
+        if total_camps == 0:
+            status = "N/A"
+        elif region.is_approved:
+            status = "GREEN"
+        elif submitted_camps == 0:
             status = "RED"
-        elif submitted_camps > 0 and submitted_camps < total_camps:
+        elif submitted_camps < total_camps:
             status = "ORANGE"
-        elif submitted_camps == total_camps:
-            if region.is_approved:
-                status = "GREEN"
-            else:
-                status = "BLUE"
+        else:
+            status = "BLUE"
 
         region_statuses.append({
             "id": region.id,
