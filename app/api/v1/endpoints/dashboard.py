@@ -172,10 +172,11 @@ def get_gis_tracking(
     """
     # Hierarchy and Location filtering logic
     is_admin = current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
+    is_executive = str(current_user.role).upper() == UserRole.EXECUTIVE.value
     
     query = db.query(User).filter(User.is_deleted == False)
     
-    if not is_admin:
+    if not is_admin and not is_executive:
         r = str(current_user.role).upper()
         if r == UserRole.CAMP.value and current_user.camp_id is not None:
             query = query.filter(User.camp_id == current_user.camp_id)
