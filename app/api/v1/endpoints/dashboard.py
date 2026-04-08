@@ -61,7 +61,9 @@ def get_dashboard_stats(
     # Common report filter
     report_q = db.query(Report)
     
-    if not is_admin:
+    # Permission Scope: Admins and Executives see all reports (National scope). 
+    # Others are restricted to their hierarchy/location.
+    if not is_admin and not is_executive:
         from app.models.user import Region
         
         # Fast SQL JOIN for agents based on agent's assigned region (Auto-calculated via JOIN)
