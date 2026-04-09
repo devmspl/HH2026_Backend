@@ -96,6 +96,39 @@ def read_user_me(
     """
     return current_user
 
+@router.put("/users/me", response_model=user_schema.User)
+def update_user_me(
+    *,
+    db: Session = Depends(get_db),
+    user_in: user_schema.UserUpdate,
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Update my own profile.
+    """
+    update_data = user_in.model_dump(exclude_unset=True)
+    
+    # Don't allow self-changing role via this endpoint
+    if "role" in update_data:
+        del update_data["role"]
+    if "role_id" in update_data:
+        del update_data["role_id"]
+        
+    # Update password if provided
+    if "password" in update_data:
+        from app.core.security import get_password_hash
+        current_user.hashed_password = get_password_hash(update_data["password"])
+        del update_data["password"]
+        
+    # Update other fields
+    for field, value in update_data.items():
+        setattr(current_user, field, value)
+        
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
 @router.post("/users/me/avatar")
 async def update_avatar(
     *,

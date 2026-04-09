@@ -2,6 +2,7 @@ import secrets
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.api.v1.endpoints import login
 from app.core.auth import get_current_user, RoleChecker
 from app.core.role_permissions import can_create_role, get_creatable_roles
@@ -36,15 +37,20 @@ def read_agents(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
+    role: Optional[str] = None,
 ) -> Any:
     """
-    Retrieve agents based on role hierarchy.
-    Shows users with equal or lower role level.
+    Retrieve agents based on role hierarchy and optional role filter.
     """
     current_level = get_role_level(current_user.role)
     
     # Base query
     query = db.query(User)
+    
+    # Filter by specific role if provided
+    if role:
+        role_upper = role.upper()
+        query = query.filter(func.upper(User.role).in_([role_upper, role_upper.title(), role_upper.upper(), role_upper.lower()]))
     
     # Filter by status if provided
     if status:
@@ -54,12 +60,12 @@ def read_agents(
     query = query.filter(User.is_deleted == False)
     
     # Hierarchy filtering logic
-    is_admin = current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
+    is_admin = current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE]
     
     if is_admin:
-        # Admins see all roles <= current user level
+        # Senior roles see all roles (National Scope)
         from app.models.user import SystemRole
-        allowed_roles = [role for role, level in ROLE_HIERARCHY.items() if level <= current_level]
+        allowed_roles = list(ROLE_HIERARCHY.keys())
         allowed_role_strs = [r.value if hasattr(r, 'value') else str(r) for r in allowed_roles]
         
         # Also include any custom system roles if their mapped level (default 0) <= current_level
@@ -108,19 +114,19 @@ def read_agents(
         extra_users = []
         if r == "NATIONAL":
             extra_users = db.query(User.id).filter(
-                User.role.in_(["PROVINCIAL", "Provincial"]),
+                User.role.in_(["NATIONAL", "National", "PROVINCIAL", "Provincial", "DISTRICT", "District"]),
                 User.is_deleted == False
             ).all()
         elif r == "PROVINCIAL" and current_user.province_id:
             extra_users = db.query(User.id).filter(
                 User.province_id == current_user.province_id,
-                User.role.in_(["DISTRICT", "District"]),
+                User.role.in_(["PROVINCIAL", "Provincial", "DISTRICT", "District", "REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
                 User.is_deleted == False
             ).all()
         elif r == "DISTRICT" and current_user.district_id:
             extra_users = db.query(User.id).filter(
                 User.district_id == current_user.district_id,
-                User.role.in_(["REGION", "Region", "CAMP", "Camp"]),
+                User.role.in_(["DISTRICT", "District", "REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
                 User.is_deleted == False
             ).all()
         elif r == "REGION" and current_user.region_id:

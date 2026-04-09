@@ -81,6 +81,62 @@ def create_chat_group(payload: GroupCreate, db: Session = Depends(get_db), curre
     db.refresh(db_group)
     return db_group
 
+class DirectChatRequest(BaseModel):
+    target_user_id: int
+
+@router.post("/direct", response_model=general_schema.ChatGroup)
+def get_or_create_direct_chat(payload: DirectChatRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Open an existing 1:1 chat or create a new one.
+    """
+    target_user = db.query(User).filter(User.id == payload.target_user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Target user not found")
+        
+    # Permission Checks
+    cur_role = str(current_user.role).upper()
+    is_executive = cur_role == "EXECUTIVE"
+    is_provincial = cur_role == "PROVINCIAL"
+    is_admin = cur_role in ["SUPER_ADMIN", "ADMINISTRATOR"]
+    
+    if not is_admin and not is_executive:
+        # Provincial check
+        if is_provincial:
+            if target_user.province_id != current_user.province_id:
+                raise HTTPException(status_code=403, detail="Provincial users can only chat with users in their province")
+        # Other roles check (for future scalability, restrict to subordinates or geography)
+        # Note: Previous requirements allowed "Agent -> Agent" if in same region.
+        # Keeping it consistent with hierarchy logic if needed.
+
+    # 1. Find existing 1:1 chat
+    # A 1:1 chat is a group with type "DIRECT" or just 2 members including both.
+    # To be precise, let's look for groups where BOTH are members and total members is 2.
+    from sqlalchemy import and_
+    
+    existing_group = None
+    # We loop through current user's groups to find a 1:1 with the target user
+    for group in current_user.chat_groups:
+        if len(group.members) == 2:
+            member_ids = [m.id for m in group.members]
+            if payload.target_user_id in member_ids and current_user.id in member_ids:
+                existing_group = group
+                break
+                
+    if existing_group:
+        return existing_group
+        
+    # 2. Create new 1:1 chat
+    db_group = ChatGroup(
+        name=f"{target_user.full_name}",
+        manager_id=current_user.id,
+        group_type="DIRECT"
+    )
+    db_group.members = [current_user, target_user]
+    db.add(db_group)
+    db.commit()
+    db.refresh(db_group)
+    return db_group
+
 @router.post("/groups/auto-create")
 def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
