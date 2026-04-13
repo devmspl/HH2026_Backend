@@ -25,7 +25,7 @@ def reset_and_seed():
         # 2. Create Global Admin
         admin = User(
             email="admin@example.com",
-            hashed_password=password_hash,
+            hashed_password=get_password_hash("admin123"),
             full_name="System Administrator",
             role=UserRole.SUPER_ADMIN,
             is_superuser=True
