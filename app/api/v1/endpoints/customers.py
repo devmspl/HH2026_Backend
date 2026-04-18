@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, and_
 from sqlalchemy.exc import IntegrityError
 from app.core.auth import get_current_user
 from app.db.session import get_db
@@ -63,12 +64,17 @@ def get_customers(
 ):
     """
     Retrieve customers.
-    Camp users see only customers assigned to them (assigned_camp_user_id = current_user.id).
+    Camp users see only customers assigned to them or unassigned in their camp.
     """
     query = db.query(Customer)
     user_role = str(current_user.role).upper()
-    if user_role == UserRole.CAMP.value:
-        query = query.filter(Customer.assigned_camp_user_id == current_user.id)
+    if user_role == UserRole.CAMP.value or user_role == "CAMP":
+        query = query.filter(
+            or_(
+                Customer.assigned_camp_user_id == current_user.id,
+                and_(Customer.camp_id == current_user.camp_id, Customer.assigned_camp_user_id == None)
+            )
+        )
     customers = query.offset(skip).limit(limit).all()
     return [_customer_to_dict(c) for c in customers]
 
@@ -171,11 +177,11 @@ def update_customer(
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    if current_user.role == UserRole.CAMP:
-        if customer.camp_id != current_user.camp_id:
+    if current_user.role == UserRole.CAMP or current_user.role == "CAMP":
+        if customer.assigned_camp_user_id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only edit customers within your camp.",
+                detail="You can only edit customers assigned to you.",
             )
 
     data = payload.model_dump(exclude_unset=True)
@@ -212,7 +218,7 @@ def get_customer(
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    if current_user.role == UserRole.CAMP and customer.camp_id != current_user.camp_id:
+    if (current_user.role == UserRole.CAMP or current_user.role == "CAMP") and customer.assigned_camp_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Customer not found")
     return _customer_to_dict(customer)
 
@@ -357,6 +363,56 @@ async def bulk_upload_customers(
     
     return {"message": f"Successfully imported {customers_count} customers.", "filename": file.filename}
 
+@router.post("/{customer_id}/assign-me")
+def self_assign_customer(
+    customer_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Allow a Camp User to take ownership of an unassigned customer in their camp.
+    """
+    user_role = str(current_user.role).upper()
+    if user_role != UserRole.CAMP.value and user_role != "CAMP":
+        raise HTTPException(status_code=403, detail="Only Camp Users can self-assign customers.")
+
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    # 1. Validation: Must be unassigned
+    if customer.assigned_camp_user_id is not None:
+        raise HTTPException(status_code=400, detail="Customer is already assigned to another user.")
+
+    # 2. Validation: Must be in the same camp
+    if customer.camp_id != current_user.camp_id:
+        raise HTTPException(status_code=403, detail="You can only self-assign customers within your own camp.")
+
+    # 3. Validation: 100 customer limit check
+    current_count = db.query(Customer).filter(
+        Customer.assigned_camp_user_id == current_user.id
+    ).count()
+    if current_count >= CAMP_USER_MAX_CUSTOMERS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You reached your limit of {CAMP_USER_MAX_CUSTOMERS} customers. Cannot assign more.",
+        )
+
+    # 4. Perform Assignment
+    customer.assigned_camp_user_id = current_user.id
+    # Sync other hierarchy fields for consistency
+    customer.region_id = current_user.region_id
+    customer.district_id = current_user.district_id
+    customer.province_id = current_user.province_id
+
+    db.commit()
+    db.refresh(customer)
+    
+    log_action(db, current_user.id, "SELF_ASSIGN_CUSTOMER", f"User {current_user.email} self-assigned customer {customer.full_name}")
+    
+    return {"message": "Customer successfully assigned to you", "customer": _customer_to_dict(customer)}
+
+
 @router.delete("/{customer_id}")
 def delete_customer(
     customer_id: int,
@@ -370,8 +426,8 @@ def delete_customer(
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    if current_user.role == UserRole.CAMP and customer.camp_id != current_user.camp_id:
-        raise HTTPException(status_code=403, detail="You can only delete customers within your camp.")
+    if (current_user.role == UserRole.CAMP or current_user.role == "CAMP") and customer.assigned_camp_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only delete customers assigned to you.")
     
     customer_name = customer.full_name
     db.delete(customer)

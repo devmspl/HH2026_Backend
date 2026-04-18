@@ -135,10 +135,10 @@ def read_agents(
                 User.role.in_(["REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
                 User.is_deleted == False
             ).all()
-        elif r == "CAMP" and current_user.camp_id:
+        elif r == "CAMP" and current_user.region_id:
             extra_users = db.query(User.id).filter(
-                User.camp_id == current_user.camp_id,
-                User.role.in_(["CAMP", "Camp", "AGENT", "Agent"]),
+                User.region_id == current_user.region_id,
+                User.role.in_(["REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
                 User.is_deleted == False
             ).all()
         elif r == "AGENT" and current_user.region_id:

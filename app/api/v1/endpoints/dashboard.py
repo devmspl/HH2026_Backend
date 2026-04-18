@@ -28,35 +28,43 @@ def get_dashboard_stats(
     user_ids_in_hierarchy = None
     
     if not is_admin:
-        # 1. Start with recursive subordinates
-        user_ids_in_hierarchy = [current_user.id]
-        to_process = [current_user.id]
-        processed = {current_user.id}
-        
-        while to_process:
-            pid = to_process.pop()
-            subs = db.query(User.id).filter(User.parent_id == pid, User.is_deleted == False).all()
-            for s in subs:
-                sid = s[0]
-                if sid not in processed:
-                    user_ids_in_hierarchy.append(sid)
-                    to_process.append(sid)
-                    processed.add(sid)
-
-        # 2. Add location-based users (anyone in the same Province/District/Region/Camp)
-        # This ensures a CAMP user sees all agents in their camp, even if not directly their children
-        loc_filters = []
-        if current_user.camp_id: loc_filters.append(User.camp_id == current_user.camp_id)
-        elif current_user.region_id: loc_filters.append(User.region_id == current_user.region_id)
-        elif current_user.district_id: loc_filters.append(User.district_id == current_user.district_id)
-        elif current_user.province_id: loc_filters.append(User.province_id == current_user.province_id)
-        
-        if loc_filters and not is_executive:
-             loc_users = db.query(User.id).filter(or_(*loc_filters), User.is_deleted == False).all()
-             for u in loc_users:
-                 if u[0] not in processed:
-                     user_ids_in_hierarchy.append(u[0])
-                     processed.add(u[0])
+        # 1. Determine the strict user scope based on Role and Location
+        if cur_role == "CAMP" and current_user.camp_id:
+            # STRICT CAMP ANCHOR: Only see users in this camp
+            scope_users = db.query(User.id).filter(
+                User.camp_id == current_user.camp_id, 
+                User.is_deleted == False
+            ).all()
+            user_ids_in_hierarchy = [u[0] for u in scope_users]
+        elif cur_role == "REGION" and current_user.region_id:
+            # STRICT REGION ANCHOR: Only see users in this region
+            scope_users = db.query(User.id).filter(
+                User.region_id == current_user.region_id, 
+                User.is_deleted == False
+            ).all()
+            user_ids_in_hierarchy = [u[0] for u in scope_users]
+        elif cur_role == "DISTRICT" and current_user.district_id:
+            # DISTRICT ANCHOR
+            scope_users = db.query(User.id).filter(
+                User.district_id == current_user.district_id, 
+                User.is_deleted == False
+            ).all()
+            user_ids_in_hierarchy = [u[0] for u in scope_users]
+        else:
+            # DEFAULT HIERARCHY: Recursive subordinates if no specific anchor is found
+            user_ids_in_hierarchy = [current_user.id]
+            to_process = [current_user.id]
+            processed = {current_user.id}
+            
+            while to_process:
+                pid = to_process.pop()
+                subs = db.query(User.id).filter(User.parent_id == pid, User.is_deleted == False).all()
+                for s in subs:
+                    sid = s[0]
+                    if sid not in processed:
+                        user_ids_in_hierarchy.append(sid)
+                        to_process.append(sid)
+                        processed.add(sid)
 
     # Common report filter
     report_q = db.query(Report)
@@ -64,10 +72,23 @@ def get_dashboard_stats(
     # Permission Scope: Admins and Executives see all reports (National scope). 
     # Others are restricted to their hierarchy/location.
     if not is_admin and not is_executive:
-        from app.models.user import Region
-        
-        # Fast SQL JOIN for agents based on agent's assigned region (Auto-calculated via JOIN)
-        if current_user.region_id:
+        # STRICT ROLE-BASED SCOPING
+        if cur_role == "CAMP" and current_user.camp_id:
+            # 1. Total Agents in this specific Camp
+            total_agents = db.query(User).filter(
+                User.camp_id == current_user.camp_id,
+                User.is_deleted == False
+            ).count()
+
+            # 2. Active Agents in this specific Camp
+            active_agents = db.query(User).filter(
+                User.camp_id == current_user.camp_id,
+                User.is_deleted == False,
+                User.is_active == True
+            ).count()
+        elif current_user.region_id:
+            # 3. Total Agents in this specific Region (for Regional Managers)
+            from app.models.user import Region
             total_agents = db.query(User).join(Region, User.region_id == Region.id).filter(
                 Region.id == current_user.region_id,
                 User.is_deleted == False

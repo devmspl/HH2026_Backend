@@ -2,6 +2,8 @@ from sqlalchemy.orm import Session
 from app.models.user import User, ChatGroup, UserRole, Region, Camp, Province, District
 
 ELIGIBLE_REGION_ROLES = ["REGION", "Region", "region", "CAMP", "Camp", "camp", "AGENT", "Agent", "agent"]
+ELIGIBLE_PROVINCE_ROLES = ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "PROVINCIAL", "DISTRICT", "National", "Provincial", "District"]
+ELIGIBLE_DISTRICT_ROLES = ["DISTRICT", "REGION", "District", "Region"]
 
 def sync_user_groups(db: Session, user: User):
     """
@@ -33,22 +35,24 @@ def sync_user_groups(db: Session, user: User):
         province = db.query(Province).filter(Province.id == user.province_id).first()
         if province:
             prov_group = db.query(ChatGroup).filter(ChatGroup.group_type == "PROVINCE", ChatGroup.name.like(f"%{province.name}%")).first()
-            if not prov_group:
-                # Create it if it doesn't exist
-                prov_group = ChatGroup(name=f"{province.name} Provincial Group", manager_id=user.id, group_type="PROVINCE")
-                db.add(prov_group)
-                db.flush()
-            
-            if user not in prov_group.members:
-                prov_group.members.append(user)
+            if prov_group:
+                is_prov_eligible = str(user.role).upper() in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "PROVINCIAL", "DISTRICT"]
+                if is_prov_eligible and user not in prov_group.members:
+                    prov_group.members.append(user)
+                elif not is_prov_eligible and user in prov_group.members:
+                    prov_group.members.remove(user)
 
     # 3. District Group
     if user.district_id:
         district = db.query(District).filter(District.id == user.district_id).first()
         if district:
             dist_group = db.query(ChatGroup).filter(ChatGroup.group_type == "DISTRICT", ChatGroup.name.like(f"%{district.name}%")).first()
-            if dist_group and user not in dist_group.members:
-                dist_group.members.append(user)
+            if dist_group:
+                is_dist_eligible = str(user.role).upper() in ["DISTRICT", "REGION"]
+                if is_dist_eligible and user not in dist_group.members:
+                    dist_group.members.append(user)
+                elif not is_dist_eligible and user in dist_group.members:
+                    dist_group.members.remove(user)
 
     # 4. Regional Group
     if user.region_id:
@@ -101,7 +105,11 @@ def sync_all_groups(db: Session):
     all_provinces = db.query(Province).all()
     for prov in all_provinces:
         prov_group = db.query(ChatGroup).filter(ChatGroup.group_type == "PROVINCE", ChatGroup.name.like(f"%{prov.name}%")).first()
-        prov_members = db.query(User).filter(User.province_id == prov.id, User.is_deleted == False).all()
+        prov_members = db.query(User).filter(
+            User.province_id == prov.id, 
+            User.role.in_(ELIGIBLE_PROVINCE_ROLES),
+            User.is_deleted == False
+        ).all()
         if prov_members:
             if not prov_group:
                 prov_group = ChatGroup(name=f"{prov.name} Provincial Group", manager_id=prov_members[0].id, group_type="PROVINCE")
@@ -116,7 +124,11 @@ def sync_all_groups(db: Session):
     all_districts = db.query(District).all()
     for dist in all_districts:
         dist_group = db.query(ChatGroup).filter(ChatGroup.group_type == "DISTRICT", ChatGroup.name.like(f"%{dist.name}%")).first()
-        dist_members = db.query(User).filter(User.district_id == dist.id, User.is_deleted == False).all()
+        dist_members = db.query(User).filter(
+            User.district_id == dist.id, 
+            User.role.in_(ELIGIBLE_DISTRICT_ROLES),
+            User.is_deleted == False
+        ).all()
         if dist_members:
             if not dist_group:
                 dist_group = ChatGroup(name=f"{dist.name} District Group", manager_id=dist_members[0].id, group_type="DISTRICT")
