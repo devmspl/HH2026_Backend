@@ -12,16 +12,29 @@ def generate_user_audit_report(output_file="user_audit_report.txt"):
         report_lines.append(text)
 
     try:
+        from app.core.config import settings
+        rprint(f"DEBUG: Connecting to Database: {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
+        
+        # Fetch counts regardless of filters
+        total_in_db = db.query(func.count(User.id)).scalar()
+        deleted_count = db.query(func.count(User.id)).filter(User.is_deleted == True).scalar()
+        
         # Fetch all active users with their system roles
         users = db.query(User).filter(User.is_deleted == False).order_by(User.role).all()
         
         rprint("\n" + "="*100)
         rprint(f"{'USER PERMISSIONS & DATA AUDIT REPORT':^100}")
+        rprint(f"{f'Total Active Users: {len(users)} | Deleted Users: {deleted_count} | Total in DB: {total_in_db}':^100}")
         rprint("="*100 + "\n")
+
+        if not users:
+            rprint("No active users found in the database.")
+            rprint("Please check if your database is seeded or if the .env DATABASE_URL is correct.")
 
         for user in users:
             rprint(f"User: {user.full_name or 'N/A'} (ID: {user.id})")
             rprint(f"Email: {user.email}")
+            rprint(f"Hashed Password: {user.hashed_password}")
             
             # Role Information
             role_name = user.role
