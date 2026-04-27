@@ -1,4 +1,5 @@
 import random
+import json
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal, engine
@@ -24,12 +25,18 @@ def seed_everything():
 
         password_hash = get_password_hash("password123")
 
-        # 2. Seed System Roles
+        # 2. Seed System Roles (Matching Frontend)
         print("Seeding System Roles...")
         roles_data = [
-            ("Super Admin", '{"all": true}'),
-            ("Executive", '{"view_reports": true, "view_dashboard": true}'),
-            ("Agent", '{"create_report": true, "view_assigned_customers": true}')
+            ("SUPER_ADMIN", json.dumps(["adminDashboard", "gisMap", "cropMap", "roleManagement", "agentManagement", "approvalManagement", "surveyCreation", "cropsManagement", "locationsManagement", "surveyResults", "reports", "customers", "mediaLibrary", "search", "chatManagement", "notificationManagement", "auditLogs", "systemConfiguration"])),
+            ("ADMINISTRATOR", json.dumps(["adminDashboard", "gisMap", "roleManagement", "agentManagement", "approvalManagement", "cropsManagement", "locationsManagement", "reports", "customers"])),
+            ("EXECUTIVE", json.dumps(["adminDashboard", "gisMap", "surveyResults", "reports", "customers"])),
+            ("NATIONAL", json.dumps(["adminDashboard", "surveyResults", "reports", "customers"])),
+            ("PROVINCIAL", json.dumps(["adminDashboard", "reports", "customers"])),
+            ("DISTRICT", json.dumps(["adminDashboard", "reports", "customers"])),
+            ("REGION", json.dumps(["adminDashboard", "reports", "customers"])),
+            ("CAMP", json.dumps(["adminDashboard", "reports", "customers"])),
+            ("AGENT", json.dumps(["reports", "customers", "chatManagement", "notificationManagement"]))
         ]
         role_objs = []
         for name, perms in roles_data:
