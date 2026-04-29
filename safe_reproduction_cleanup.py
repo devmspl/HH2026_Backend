@@ -5,22 +5,23 @@ from sqlalchemy import text
 def safe_cleanup():
     db = SessionLocal()
     try:
-        print("--- Starting SUPER AGGRESSIVE SAFE Deep Cleanup ---")
+        print("--- Starting SERVER-READY SAFE Deep Cleanup ---")
         
         # Target roles
         target_roles = [UserRole.DISTRICT, UserRole.REGION, UserRole.CAMP, UserRole.AGENT]
         
-        # Wipe all child tables first
+        # Wipe child tables (Order is critical for FKs)
         tables_to_wipe = [
+            "chat_group_members", "chat_messages", "chat_groups",
             "regional_crops", "customers", "audit_logs", "notification_logs", 
-            "chat_messages", "survey_targets", "report_media", "reports"
+            "survey_targets", "report_media", "reports"
         ]
         
         for table in tables_to_wipe:
             print(f"Wiping {table}...")
             db.execute(text(f"DELETE FROM {table}"))
         
-        # Unset parent_id
+        # Unset parent_id to avoid self-reference during user deletion
         db.execute(text("UPDATE users SET parent_id = NULL WHERE role IN ('DISTRICT', 'REGION', 'CAMP', 'AGENT')"))
         
         # Delete Users
@@ -39,7 +40,7 @@ def safe_cleanup():
         db.execute(text("DELETE FROM provinces"))
 
         db.commit()
-        print("--- Cleanup SUCCESS: System is now 100% CLEAN ---")
+        print("--- Cleanup SUCCESS: System is now 100% CLEAN on Server ---")
         
     except Exception as e:
         db.rollback()
