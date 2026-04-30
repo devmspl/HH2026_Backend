@@ -1,6 +1,6 @@
 import secrets
 from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.api.v1.endpoints import login
@@ -9,6 +9,10 @@ from app.core.role_permissions import can_create_role, get_creatable_roles
 from app.db.session import get_db
 from app.models.user import User, UserRole, AccountStatus
 from app.schemas import user as user_schema
+import csv
+import io
+import random
+import string
 from app.core.security import get_password_hash
 from app.core.audit import log_action
 
@@ -676,4 +680,146 @@ def recover_agent(
     log_action(db, current_user.id, "RECOVER_USER", f"Recovered user {agent.full_name} ({agent.role})")
     
     return agent
+
+@router.post("/bulk-upload")
+async def bulk_upload_agents(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """
+    Process CSV upload and create users/agents.
+    CSV Header: full_name, email, role, phone, password, parent_id, province_id, district_id, region_id, camp_id
+    """
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    
+    content = await file.read()
+    try:
+        try:
+            decoded = content.decode('utf-8')
+        except UnicodeDecodeError:
+            decoded = content.decode('latin-1')
+
+        # Normalize line endings
+        normalized_content = decoded.replace('\r\n', '\n').replace('\r', '\n')
+        f = io.StringIO(normalized_content)
+        reader = csv.DictReader(f)
+        
+        # Header Validation (minimum headers)
+        required_headers = ['full_name', 'email', 'role']
+        actual_headers = [h.lower().replace(' ', '_') for h in (reader.fieldnames or [])]
+        
+        # Map original headers to normalized keys
+        header_map = {h: h.lower().replace(' ', '_') for h in (reader.fieldnames or [])}
+        
+        if not all(h in actual_headers for h in required_headers):
+            missing = [h for h in required_headers if h not in actual_headers]
+            raise HTTPException(status_code=400, detail=f"Invalid CSV headers. Missing: {', '.join(missing)}")
+
+        current_level = get_role_level(current_user.role)
+        processed_count = 0
+        skipped_count = 0
+        errors = []
+
+        from app.models.user import SystemRole, UserRole, AccountStatus
+        from app.services.chat_service import sync_user_groups
+
+        for row_idx, original_row in enumerate(reader, start=2):
+            row = {header_map[k]: v for k, v in original_row.items()}
+            
+            # Skip empty rows
+            if not any(row.values()):
+                continue
+
+            email = row.get('email', '').strip()
+            full_name = row.get('full_name', '').strip()
+            role_str = row.get('role', '').strip().upper()
+
+            if not email or not full_name or not role_str:
+                errors.append(f"Row {row_idx}: Missing required fields (email, full_name, or role)")
+                skipped_count += 1
+                continue
+
+            # 1. Hierarchy Check
+            new_role_level = get_role_level(role_str)
+            if new_role_level > current_level:
+                errors.append(f"Row {row_idx}: Cannot create user with higher role '{role_str}'")
+                skipped_count += 1
+                continue
+
+            # 2. Duplicate Check
+            existing = db.query(User).filter(User.email == email).first()
+            if existing:
+                skipped_count += 1
+                continue
+
+            # 3. Role Resolution
+            final_role = role_str
+            role_id = None
+            # Check if it's a dynamic role
+            system_role = db.query(SystemRole).filter(func.upper(SystemRole.name) == role_str).first()
+            if system_role:
+                final_role = system_role.name
+                role_id = system_role.id
+
+            # 4. Status and Parent Logic
+            account_status = AccountStatus.ACTIVE
+            is_active = True
+            if new_role_level == current_level and current_user.role != UserRole.SUPER_ADMIN:
+                account_status = AccountStatus.PENDING
+                is_active = False
+
+            def get_int(val):
+                if val and str(val).strip().isdigit():
+                    return int(val)
+                return None
+
+            parent_id = get_int(row.get('parent_id')) or current_user.id
+            password = row.get('password', '').strip() or "password123"
+
+            user_obj = User(
+                email=email,
+                hashed_password=get_password_hash(password),
+                full_name=full_name,
+                role=final_role,
+                role_id=role_id,
+                parent_id=parent_id,
+                is_active=is_active,
+                account_status=account_status,
+                phone=row.get('phone', '').strip(),
+                location=row.get('location', '').strip(),
+                age=get_int(row.get('age')),
+                sex=row.get('sex', row.get('gender', '')).strip(),
+                profession=row.get('profession', '').strip(),
+                nrc=row.get('nrc', '').strip(),
+                province_id=get_int(row.get('province_id')),
+                district_id=get_int(row.get('district_id')),
+                region_id=get_int(row.get('region_id')),
+                camp_id=get_int(row.get('camp_id')),
+            )
+            
+            db.add(user_obj)
+            db.flush() # To get ID for sync_user_groups
+            
+            # Sync chat groups
+            try:
+                sync_user_groups(db, user_obj)
+            except Exception as e:
+                print(f"Chat sync failed for {email}: {str(e)}")
+
+            processed_count += 1
+
+        db.commit()
+        log_action(db, current_user.id, "BULK_IMPORT_USERS", f"Imported {processed_count} users from {file.filename}. Skipped {skipped_count}.")
+        
+        return {
+            "message": f"Successfully imported {processed_count} users.",
+            "skipped": skipped_count,
+            "errors": errors if errors else None
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Failed to process CSV: {str(e)}")
 
