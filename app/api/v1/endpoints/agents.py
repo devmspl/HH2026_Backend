@@ -775,8 +775,42 @@ async def bulk_upload_agents(
                     return int(val)
                 return None
 
+            # Helper to validate foreign keys
+            def validate_fk(model, id_val, name="ID"):
+                if id_val:
+                    exists = db.query(model).filter(model.id == id_val).first()
+                    if not exists:
+                        return False, f"{name} {id_val} not found"
+                return True, None
+
+            # Extract IDs
             parent_id = get_int(row.get('parent_id')) or current_user.id
             password = row.get('password', '').strip() or "password123"
+            province_id = get_int(row.get('province_id'))
+            district_id = get_int(row.get('district_id'))
+            region_id = get_int(row.get('region_id'))
+            camp_id = get_int(row.get('camp_id'))
+
+            # Validate IDs before insertion to avoid ForeignKeyViolation
+            from app.models.user import Province, District, Region, Camp
+            validations = [
+                (Province, province_id, "Province ID"),
+                (District, district_id, "District ID"),
+                (Region, region_id, "Region ID"),
+                (Camp, camp_id, "Camp ID")
+            ]
+            
+            val_error = None
+            for model, id_val, label in validations:
+                is_valid, err = validate_fk(model, id_val, label)
+                if not is_valid:
+                    val_error = err
+                    break
+            
+            if val_error:
+                errors.append(f"Row {row_idx}: {val_error}")
+                skipped_count += 1
+                continue
 
             user_obj = User(
                 email=email,
@@ -793,10 +827,10 @@ async def bulk_upload_agents(
                 sex=row.get('sex', row.get('gender', '')).strip(),
                 profession=row.get('profession', '').strip(),
                 nrc=row.get('nrc', '').strip(),
-                province_id=get_int(row.get('province_id')),
-                district_id=get_int(row.get('district_id')),
-                region_id=get_int(row.get('region_id')),
-                camp_id=get_int(row.get('camp_id')),
+                province_id=province_id,
+                district_id=district_id,
+                region_id=region_id,
+                camp_id=camp_id,
             )
             
             db.add(user_obj)
