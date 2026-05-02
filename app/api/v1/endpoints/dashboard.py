@@ -1,5 +1,5 @@
 from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.core.auth import get_current_user
@@ -21,8 +21,14 @@ def get_dashboard_stats(
     from sqlalchemy import or_
     
     # Hierarchy and Location filtering logic
-    is_admin = current_user.is_superuser or str(current_user.role).upper() in [UserRole.SUPER_ADMIN.value, UserRole.ADMINISTRATOR.value]
     cur_role = str(current_user.role).upper()
+    is_admin = current_user.is_superuser or cur_role in [UserRole.SUPER_ADMIN.value, UserRole.ADMINISTRATOR.value]
+    
+    # Robustness: Geographically anchored users should always see scoped data
+    # unless they are super-users. This prevents misconfiguration leakage.
+    if not current_user.is_superuser and (current_user.region_id or current_user.district_id or current_user.camp_id or current_user.province_id):
+        is_admin = False
+
     is_executive = cur_role == UserRole.EXECUTIVE.value
     
     user_ids_in_hierarchy = None
@@ -77,27 +83,30 @@ def get_dashboard_stats(
             # 1. Total Agents in this specific Camp
             total_agents = db.query(User).filter(
                 User.camp_id == current_user.camp_id,
+                User.role.ilike('%AGENT%'),
                 User.is_deleted == False
             ).count()
 
             # 2. Active Agents in this specific Camp
             active_agents = db.query(User).filter(
                 User.camp_id == current_user.camp_id,
+                User.role.ilike('%AGENT%'),
                 User.is_deleted == False,
                 User.is_active == True
             ).count()
         elif current_user.region_id:
             # 3. Total Agents in this specific Region (for Regional Managers)
-            from app.models.user import Region
-            total_agents = db.query(User).join(Region, User.region_id == Region.id).filter(
-                Region.id == current_user.region_id,
+            total_agents = db.query(User).filter(
+                User.region_id == current_user.region_id,
+                User.role.ilike('%AGENT%'),
                 User.is_deleted == False
             ).count()
 
-            active_agents = db.query(User).join(Region, User.region_id == Region.id).filter(
-                Region.id == current_user.region_id,
-                User.is_active == True,
-                User.is_deleted == False
+            active_agents = db.query(User).filter(
+                User.region_id == current_user.region_id,
+                User.role.ilike('%AGENT%'),
+                User.is_deleted == False,
+                User.is_active == True
             ).count()
         else:
             # Managed Agents = people in hierarchy/location EXCEPT current user (Fallback)
@@ -189,12 +198,20 @@ def _get_station_location(db: Session) -> Optional[tuple]:
 def get_gis_tracking(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
 ):
     """
-    Get live coordinates of agents.
+    Get live coordinates of agents with pagination.
     """
+    skip = (page - 1) * limit
     # Hierarchy and Location filtering logic
     is_admin = current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
+    # Geographic Anchor Check
+    if not current_user.is_superuser:
+        if current_user.region_id or current_user.camp_id or current_user.district_id:
+            is_admin = False
+
     is_executive = str(current_user.role).upper() == UserRole.EXECUTIVE.value
     
     query = db.query(User).filter(User.is_deleted == False)
@@ -214,7 +231,8 @@ def get_gis_tracking(
             # For GIS we might just want to show current user and their children
             query = query.filter((User.id == current_user.id) | (User.parent_id == current_user.id))
 
-    agents = query.all()
+    total = query.count()
+    agents = query.offset(skip).limit(limit).all()
     results = [
         {
             "id": a.id,
@@ -227,7 +245,12 @@ def get_gis_tracking(
         }
         for a in agents if a.last_lat is not None
     ]
-    return results
+    return {
+        "items": results,
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
 
 
 @router.get("/agents-with-distance")
@@ -251,6 +274,9 @@ def get_agents_with_distance(
         query = query.filter(User.camp_id == current_user.camp_id)
     elif r == UserRole.REGION.value and current_user.region_id is not None:
         query = query.filter(User.region_id == current_user.region_id)
+        # STRICT: Regional users only see Agents and Camp users
+        if not current_user.is_superuser:
+            query = query.filter(User.role.in_([UserRole.AGENT, UserRole.CAMP, "AGENT", "Agent", "CAMP", "Camp"]))
     elif r == UserRole.DISTRICT.value and current_user.district_id is not None:
         query = query.filter(User.district_id == current_user.district_id)
     elif r == UserRole.PROVINCIAL.value and current_user.province_id is not None:
@@ -266,6 +292,8 @@ def get_agents_with_distance(
         results.append({
             "id": a.id,
             "name": a.full_name,
+            "role": a.role,
+            "profession": a.profession,
             "lat": lat,
             "lng": lng,
             "last_seen": a.last_seen.isoformat() if a.last_seen else None,

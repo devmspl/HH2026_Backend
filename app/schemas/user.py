@@ -100,3 +100,11 @@ class SurveyOut(SurveyBase):
     created_by: int
     created_at: datetime
     target_user_ids: Optional[List[int]] = None # We can map this manually or use a property
+
+class PaginatedUsers(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    items: List[User]
+    total: int
+    page: int
+    limit: int
+    pages: int

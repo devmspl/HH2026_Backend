@@ -1,7 +1,7 @@
 """Locations API: provinces, districts, regions for dropdowns and maps."""
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session, joinedload
 from app.core.auth import get_current_user
 from app.db.session import get_db
@@ -100,6 +100,24 @@ class CampUpdate(BaseModel):
     district_id: Optional[int] = None
     province_id: Optional[int] = None
     camp_type: Optional[str] = None
+
+class CampOut(BaseModel):
+    id: int
+    name: str
+    region_id: int
+    district_id: Optional[int] = None
+    province_id: Optional[int] = None
+    camp_type: Optional[str] = None
+    total_customers: int
+    model_config = ConfigDict(from_attributes=True)
+
+class PaginatedCamps(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    items: List[CampOut]
+    total: int
+    page: int
+    limit: int
+    pages: int
 
 
 # ==================== Crop Families CRUD ====================
@@ -283,7 +301,14 @@ def list_provinces(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """List all provinces (id, name, total_customers, main_crop_family_name) for dropdowns and management."""
-    rows = db.query(Province).options(joinedload(Province.main_crop_family)).order_by(Province.name).all()
+    cur_role = str(current_user.role).upper()
+    query = db.query(Province).options(joinedload(Province.main_crop_family)).order_by(Province.name)
+    
+    if cur_role not in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]:
+        if current_user.province_id:
+            query = query.filter(Province.id == current_user.province_id)
+            
+    rows = query.all()
     result = []
     for p in rows:
         count = db.query(Customer).filter(Customer.province_id == p.id).count()
@@ -304,9 +329,16 @@ def list_districts(
     province_id: Optional[int] = None,
 ) -> Any:
     """List districts; optional filter by province_id. Returns customer counts and main crop family."""
+    cur_role = str(current_user.role).upper()
     query = db.query(District).options(joinedload(District.main_crop_family)).order_by(District.name)
     if province_id is not None:
         query = query.filter(District.province_id == province_id)
+    
+    if cur_role not in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]:
+        if current_user.district_id:
+            query = query.filter(District.id == current_user.district_id)
+        elif current_user.province_id:
+            query = query.filter(District.province_id == current_user.province_id)
     rows = query.all()
     result = []
     for d in rows:
@@ -331,11 +363,18 @@ def list_regions(
     district_id: Optional[int] = None,
 ) -> Any:
     """List regions; optional filter by province_id and/or district_id."""
+    cur_role = str(current_user.role).upper()
     query = db.query(Region).options(joinedload(Region.main_crop_family)).order_by(Region.name)
     if province_id is not None:
         query = query.filter(Region.province_id == province_id)
     if district_id is not None:
         query = query.filter(Region.district_id == district_id)
+
+    if cur_role not in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]:
+        if current_user.region_id:
+            query = query.filter(Region.id == current_user.region_id)
+        elif current_user.district_id:
+            query = query.filter(Region.district_id == current_user.district_id)
     rows = query.all()
     result = []
     for r in rows:
@@ -353,17 +392,28 @@ def list_regions(
     return result
 
 
-@router.get("/camps", response_model=List[Any])
+@router.get("/camps", response_model=PaginatedCamps)
 def list_camps(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     region_id: Optional[int] = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
 ) -> Any:
-    """List camps; optional filter by region_id."""
+    """List camps; optional filter by region_id with pagination."""
+    skip = (page - 1) * limit
+    cur_role = str(current_user.role).upper()
     query = db.query(Camp).order_by(Camp.name)
     if region_id is not None:
         query = query.filter(Camp.region_id == region_id)
-    rows = query.all()
+
+    if cur_role not in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]:
+        if current_user.camp_id:
+            query = query.filter(Camp.id == current_user.camp_id)
+        elif current_user.region_id:
+            query = query.filter(Camp.region_id == current_user.region_id)
+    total = query.count()
+    rows = query.offset(skip).limit(limit).all()
     result = []
     for c in rows:
         count = db.query(Customer).filter(Customer.camp_id == c.id).count()
@@ -376,7 +426,13 @@ def list_camps(
             "total_customers": count,
             "camp_type": c.camp_type
         })
-    return result
+    return {
+        "items": result,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
 
 
 @router.get("/national-crops", response_model=List[Any])
@@ -533,12 +589,23 @@ def list_camp_users(
     CampUserTable (spec): list of camp users with CampID, RegionID, ProvinceID, DistrictID, CampName.
     Data from users (role=CAMP) joined with camps. Optionally filter by region_id.
     """
+    cur_role = str(current_user.role).upper()
     query = (
         db.query(User, Camp)
         .join(Camp, User.camp_id == Camp.id)
         .filter(User.role == UserRole.CAMP)
         .filter(User.is_deleted == False)
     )
+    
+    # Apply Scoping
+    if cur_role not in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]:
+        if current_user.region_id:
+            query = query.filter(Camp.region_id == current_user.region_id)
+        elif current_user.district_id:
+            query = query.filter(Camp.district_id == current_user.district_id)
+        elif current_user.province_id:
+            query = query.filter(Camp.province_id == current_user.province_id)
+    
     if region_id is not None:
         query = query.filter(Camp.region_id == region_id)
     rows = query.all()

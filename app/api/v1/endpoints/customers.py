@@ -70,10 +70,7 @@ def get_customers(
     user_role = str(current_user.role).upper()
     if user_role == UserRole.CAMP.value or user_role == "CAMP":
         query = query.filter(
-            or_(
-                Customer.assigned_camp_user_id == current_user.id,
-                and_(Customer.camp_id == current_user.camp_id, Customer.assigned_camp_user_id == None)
-            )
+            Customer.camp_id == current_user.camp_id
         )
     customers = query.offset(skip).limit(limit).all()
     return [_customer_to_dict(c) for c in customers]
@@ -218,7 +215,7 @@ def get_customer(
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    if (current_user.role == UserRole.CAMP or current_user.role == "CAMP") and customer.assigned_camp_user_id != current_user.id:
+    if (current_user.role == UserRole.CAMP or current_user.role == "CAMP") and customer.camp_id != current_user.camp_id:
         raise HTTPException(status_code=404, detail="Customer not found")
     return _customer_to_dict(customer)
 
@@ -233,6 +230,9 @@ async def bulk_upload_customers(
     Process CSV upload and create customers.
     CSV Header: full_name, phone, email, address, cnic
     """
+    if str(current_user.role).upper() != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Only Super Admins can bulk import customers.")
+
     if not file.filename.lower().endswith('.csv'):
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
     

@@ -269,14 +269,28 @@ def get_region_members(db: Session = Depends(get_db), current_user: User = Depen
     if not current_user.region_id:
         return []
 
-    users = db.query(User).filter(
-        User.region_id == current_user.region_id,
-        User.role.in_(ELIGIBLE_REGION_ROLES),
-        User.is_deleted == False
-    ).all()
+    # Per requirement: Regional users only see Agents and Camp users
+    # We filter ELIGIBLE_REGION_ROLES based on current user role
+    allowed_roles = ELIGIBLE_REGION_ROLES
+    cur_role_upper = str(current_user.role).upper()
     
-    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id} for u in users]
+    if cur_role_upper == "REGION":
+        allowed_roles = [r for r in ELIGIBLE_REGION_ROLES if "REGION" not in r.upper()]
+    elif cur_role_upper == "CAMP":
+        # Camp users only see agents in their camp
+        allowed_roles = [r for r in ELIGIBLE_REGION_ROLES if "AGENT" in r.upper()]
 
+    query = db.query(User).filter(
+        User.region_id == current_user.region_id,
+        User.role.in_(allowed_roles),
+        User.is_deleted == False
+    )
+
+    if str(current_user.role).upper() == "CAMP" and current_user.camp_id:
+        query = query.filter(User.camp_id == current_user.camp_id)
+
+    users = query.all()
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "profession": getattr(u, "profession", None)} for u in users]
 ELIGIBLE_DISTRICT_ROLES = ["REGION", "Region", "region", "CAMP", "Camp", "camp", "Agent", "AGENT", "agent"]
 ELIGIBLE_PROVINCIAL_ROLES = ["DISTRICT", "District", "district", "District User", "DISTRICT USER"]
 ELIGIBLE_NATIONAL_ROLES = ["PROVINCIAL", "Provincial", "provincial", "PROVINCIAL USER", "Provincial User"]
@@ -289,13 +303,18 @@ def get_district_members(db: Session = Depends(get_db), current_user: User = Dep
     if not current_user.district_id:
         return []
 
-    users = db.query(User).filter(
+    query = db.query(User).filter(
         User.district_id == current_user.district_id,
         User.role.in_(ELIGIBLE_DISTRICT_ROLES),
         User.is_deleted == False
-    ).all()
+    )
+
+    if str(current_user.role).upper() == "CAMP" and current_user.camp_id:
+        query = query.filter(User.camp_id == current_user.camp_id)
+
+    users = query.all()
     
-    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "district_id": u.district_id} for u in users]
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "district_id": u.district_id, "profession": getattr(u, "profession", None)} for u in users]
 
 @router.get("/provincial-members", response_model=List[general_schema.RegionMember])
 def get_provincial_members(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -307,7 +326,7 @@ def get_provincial_members(db: Session = Depends(get_db), current_user: User = D
         User.is_deleted == False
     ).all()
     
-    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "district_id": u.district_id, "province_id": u.province_id} for u in users]
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "district_id": u.district_id, "province_id": u.province_id, "profession": getattr(u, "profession", None)} for u in users]
 
 @router.get("/national-members", response_model=List[general_schema.RegionMember])
 def get_national_members(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -319,7 +338,7 @@ def get_national_members(db: Session = Depends(get_db), current_user: User = Dep
         User.is_deleted == False
     ).all()
     
-    return [{"id": u.id, "name": u.full_name, "role": u.role, "province_id": u.province_id} for u in users]
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "province_id": u.province_id, "profession": getattr(u, "profession", None)} for u in users]
 
 @router.post("/region-group", response_model=general_schema.RegionGroupResponse)
 def create_region_group(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -351,11 +370,25 @@ def create_region_group(db: Session = Depends(get_db), current_user: User = Depe
         db.flush() # Get ID
     
     # 3. sync members
-    members = db.query(User).filter(
+    # Per requirement: Regional users only see Agents and Camp users
+    allowed_roles = ELIGIBLE_REGION_ROLES
+    cur_role_upper = str(current_user.role).upper()
+    
+    if cur_role_upper == "REGION":
+        allowed_roles = [r for r in ELIGIBLE_REGION_ROLES if "REGION" not in r.upper()]
+    elif cur_role_upper == "CAMP":
+        allowed_roles = [r for r in ELIGIBLE_REGION_ROLES if "AGENT" in r.upper()]
+
+    query = db.query(User).filter(
         User.region_id == current_user.region_id,
-        User.role.in_(ELIGIBLE_REGION_ROLES),
+        User.role.in_(allowed_roles),
         User.is_deleted == False
-    ).all()
+    )
+
+    if str(current_user.role).upper() == "CAMP" and current_user.camp_id:
+        query = query.filter(User.camp_id == current_user.camp_id)
+
+    members = query.all()
     
     group.members = members
     db.commit()
@@ -364,7 +397,7 @@ def create_region_group(db: Session = Depends(get_db), current_user: User = Depe
     return {
         "group_id": group.id,
         "group_name": group.name,
-        "members": [{"id": m.id, "name": m.full_name, "role": m.role, "region_id": m.region_id} for m in group.members]
+        "members": [{"id": m.id, "name": m.full_name, "role": m.role, "region_id": m.region_id, "profession": getattr(m, "profession", None)} for m in group.members]
     }
 
 @router.get("/region-group", response_model=general_schema.RegionGroupResponse)

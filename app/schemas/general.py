@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
 class DashboardStats(BaseModel):
@@ -270,3 +270,11 @@ class DistrictSummary(BaseModel):
     agents_by_region: List[RegionCount]
     customers_by_region: List[RegionCount]
     region_statuses: List[RegionReportingStatus]
+
+class PaginatedReports(BaseModel):
+    items: List[Report]
+    total: int
+    page: int
+    limit: int
+    pages: int
+    model_config = ConfigDict(from_attributes=True)

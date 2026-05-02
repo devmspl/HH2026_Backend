@@ -1,7 +1,7 @@
-import sys
-from sqlalchemy import create_engine
-engine = create_engine("postgresql://postgres:123456789@localhost:5432/ccns_customer_180")
-with engine.connect() as conn:
-    result = conn.execute("SELECT id, name, form_type, status FROM surveys")
-    for row in result:
-        print(row)
+from app.db.session import SessionLocal
+from app.models.user import User
+
+db = SessionLocal()
+camp_users = db.query(User).filter(User.role == 'CAMP').all()
+for u in camp_users:
+    print(f"ID: {u.id}, Email: {u.email}, Role: {u.role}, CampID: {u.camp_id}, SuperUser: {u.is_superuser}")

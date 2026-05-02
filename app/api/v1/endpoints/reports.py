@@ -1,6 +1,6 @@
 from typing import Any, List, Optional, Dict, Tuple
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.core.auth import get_current_user, RoleChecker
@@ -160,12 +160,12 @@ def _aggregate_national_crop_reports(
 
 
 
-@router.get("/", response_model=List[general_schema.Report])
+@router.get("/", response_model=general_schema.PaginatedReports)
 def read_reports(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    skip: int = 0,
-    limit: int = 100,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
     status: Optional[str] = None,
     agent_id: Optional[int] = None,
     search: Optional[str] = None,
@@ -173,8 +173,10 @@ def read_reports(
     end_date: Optional[datetime] = None,
 ) -> Any:
     """
+    List reports with pagination and filters.
     Retrieve reports with search and filter capabilities.
     """
+    skip = (page - 1) * limit
     query = db.query(Report)
 
     # Search (title, description, confirmation_no)
@@ -201,8 +203,12 @@ def read_reports(
     # Visibility constraints
     if current_user.role == UserRole.AGENT:
         query = query.filter(Report.agent_id == current_user.id)
-    # For demo, keeping it simple; admins see all matching filters.
+    elif str(current_user.role).upper() == "CAMP" and current_user.camp_id:
+        query = query.filter(Report.camp_id == current_user.camp_id)
+    elif str(current_user.role).upper() == "REGION" and current_user.region_id:
+        query = query.filter(Report.region_id == current_user.region_id)
 
+    total = query.count()
     reports = query.order_by(Report.created_at.desc()).offset(skip).limit(limit).all()
 
     # Populate names (manual population because relationship is one-way or to keep it simple)
@@ -231,7 +237,13 @@ def read_reports(
             if edit_user:
                 edit.user_name = edit_user.full_name
 
-    return reports
+    return {
+        "items": reports,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
 
 
 @router.get("/crops/national", response_model=general_schema.NationalCropReport)
@@ -275,7 +287,10 @@ def get_national_crop_report(
     id_map = {c.crop_name: str(c.id) for c in crops_info}
 
     # Fetch true system total farmers
+    from app.models.user import Customer
     total_system_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
+    if not total_system_farmers:
+        total_system_farmers = db.query(Customer).count()
 
     total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(
         reports, id_map, total_system_farmers=total_system_farmers
@@ -402,12 +417,29 @@ def get_regional_crops_tally(
     """
     from app.models.user import Survey, Region, District, Province
     
+    cur_role = str(current_user.role).upper()
+    is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR"]
+    
     # Requirement 1: Scope based on provided filters OR current user's location
     eff_region_id = region_id
     eff_district_id = district_id
     eff_province_id = province_id
     
-    # If no filters provided, auto-scope to user's location
+    # STRICT SCoping for non-admins: They cannot override their own geography
+    if not is_admin:
+        if current_user.region_id:
+            eff_region_id = current_user.region_id
+            # Ignore higher level filters if we are anchored to a region
+            eff_district_id = None
+            eff_province_id = None
+        elif current_user.district_id:
+            # If district user, they can filter by region within their district, but eff_district_id MUST be theirs
+            eff_district_id = current_user.district_id
+            eff_province_id = None
+        elif current_user.province_id:
+            eff_province_id = current_user.province_id
+    
+    # If no filters provided after scoping, fallback to whatever we have
     if not (eff_region_id or eff_district_id or eff_province_id):
         if current_user.region_id: eff_region_id = current_user.region_id
         elif current_user.district_id: eff_district_id = current_user.district_id
@@ -428,6 +460,9 @@ def get_regional_crops_tally(
     if eff_province_id is not None:
         query = query.filter(Report.province_id == eff_province_id)
     
+    if str(current_user.role).upper() == "CAMP" and current_user.camp_id:
+        query = query.filter(Report.camp_id == current_user.camp_id)
+    
     reports = query.all()
 
     # Calculate system totals based on filtered scope
@@ -440,6 +475,14 @@ def get_regional_crops_tally(
         total_system_farmers = db.query(Province.total_customers).filter(Province.id == eff_province_id).scalar() or 0
     else:
         total_system_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
+
+    if not total_system_farmers:
+        from app.models.user import Customer
+        c_query = db.query(Customer)
+        if eff_region_id: c_query = c_query.filter(Customer.region_id == eff_region_id)
+        elif eff_district_id: c_query = c_query.filter(Customer.district_id == eff_district_id)
+        elif eff_province_id: c_query = c_query.filter(Customer.province_id == eff_province_id)
+        total_system_farmers = c_query.count()
 
     # 1. Total Camps Count
     from app.models.user import Camp
@@ -804,6 +847,31 @@ def create_report(
                 region_id = getattr(agent_user, "region_id", None)
                 camp_id = getattr(agent_user, "camp_id", None)
 
+
+    # OVERWRITE LOGIC: Same agent + Same survey -> Overwrite previous
+    # This ensures "withinPeriod" effectively means "per survey campaign"
+    existing_report = db.query(Report).filter(
+        Report.agent_id == report_in.agent_id,
+        Report.survey_id == report_in.survey_id
+    ).first()
+
+    if existing_report:
+        existing_report.title = report_in.title
+        existing_report.description = report_in.description
+        existing_report.gps_lat = report_in.gps_lat
+        existing_report.gps_lng = report_in.gps_lng
+        existing_report.survey_data = json.dumps(report_in.survey_responses) if report_in.survey_responses else None
+        existing_report.status = report_in.status or "pending"
+        existing_report.province_id = province_id
+        existing_report.district_id = district_id
+        existing_report.region_id = region_id
+        existing_report.camp_id = camp_id
+        # Update timestamp to now for fresh tracking
+        existing_report.created_at = datetime.utcnow()
+        db.add(existing_report)
+        db.commit()
+        db.refresh(existing_report)
+        return existing_report
 
     db_obj = Report(
         agent_id=report_in.agent_id,

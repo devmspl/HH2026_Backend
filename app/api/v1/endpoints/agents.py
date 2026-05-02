@@ -34,18 +34,19 @@ def get_role_level(role: Any) -> int:
     return 0
 
 
-@router.get("/", response_model=List[user_schema.User])
+@router.get("/", response_model=user_schema.PaginatedUsers)
 def read_agents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    skip: int = 0,
-    limit: int = 100,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
     status: Optional[str] = None,
     role: Optional[str] = None,
 ) -> Any:
     """
-    Retrieve agents based on role hierarchy and optional role filter.
+    Retrieve agents based on role hierarchy and optional role filter with pagination.
     """
+    skip = (page - 1) * limit
     current_level = get_role_level(current_user.role)
     
     # Base query
@@ -134,21 +135,23 @@ def read_agents(
                 User.is_deleted == False
             ).all()
         elif r == "REGION" and current_user.region_id:
+            # STRICT REGION: Only Agents and Camp Users in their region
             extra_users = db.query(User.id).filter(
                 User.region_id == current_user.region_id,
-                User.role.in_(["REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
+                User.role.in_(["CAMP", "Camp", "camp", "AGENT", "Agent", "agent"]),
                 User.is_deleted == False
             ).all()
-        elif r == "CAMP" and current_user.region_id:
+        elif r == "CAMP" and current_user.camp_id:
+            # STRICT CAMP: Only Agents in their camp
             extra_users = db.query(User.id).filter(
-                User.region_id == current_user.region_id,
-                User.role.in_(["REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]),
+                User.camp_id == current_user.camp_id,
+                User.role.in_(["AGENT", "Agent", "agent"]),
                 User.is_deleted == False
             ).all()
-        elif r == "AGENT" and current_user.region_id:
+        elif r == "AGENT" and current_user.camp_id:
             extra_users = db.query(User.id).filter(
-                User.region_id == current_user.region_id,
-                User.role.in_(["REGION", "Region", "CAMP", "Camp", "AGENT", "Agent"]), # Included fellow agents for standard access
+                User.camp_id == current_user.camp_id,
+                User.role.in_(["CAMP", "Camp", "AGENT", "Agent"]), # Included fellow agents in the same camp
                 User.is_deleted == False
             ).all()
             
@@ -163,6 +166,7 @@ def read_agents(
         query = query.filter(User.id.in_(sub_ids))
     
     # 3. Apply pagination
+    total = query.count()
     users = query.offset(skip).limit(limit).all()
     
     # 4. Attach approver details for each user
@@ -183,7 +187,13 @@ def read_agents(
         
         result.append(user_dict)
         
-    return result
+    return {
+        "items": result,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
 
 @router.get("/approval-list", response_model=List[user_schema.User])
 def get_approval_list(
