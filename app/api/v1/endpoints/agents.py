@@ -42,6 +42,10 @@ def read_agents(
     limit: int = Query(20, ge=1, le=100),
     status: Optional[str] = None,
     role: Optional[str] = None,
+    search: Optional[str] = None,
+    region_id: Optional[int] = Query(None, alias="regionId"),
+    district_id: Optional[int] = Query(None, alias="districtId"),
+    camp_id: Optional[int] = Query(None, alias="campId"),
 ) -> Any:
     """
     Retrieve agents based on role hierarchy and optional role filter with pagination.
@@ -60,6 +64,23 @@ def read_agents(
     # Filter by status if provided
     if status:
         query = query.filter(User.account_status == status)
+        
+    # Search functionality
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            (User.full_name.ilike(search_filter)) |
+            (User.email.ilike(search_filter)) |
+            (User.profession.ilike(search_filter))
+        )
+
+    # Location filters
+    if region_id:
+        query = query.filter(User.region_id == region_id)
+    if district_id:
+        query = query.filter(User.district_id == district_id)
+    if camp_id:
+        query = query.filter(User.camp_id == camp_id)
         
     # Exclude deleted by default in main list
     query = query.filter(User.is_deleted == False)
