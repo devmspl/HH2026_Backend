@@ -91,21 +91,12 @@ def create_customer(
     if data.get("cnic") is not None and (not data["cnic"] or not str(data["cnic"]).strip()):
         data["cnic"] = None
 
-    if current_user.role == UserRole.CAMP:
-        current_count = db.query(Customer).filter(
-            Customer.assigned_camp_user_id == current_user.id
-        ).count()
-        if current_count >= CAMP_USER_MAX_CUSTOMERS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Camp users can have at most {CAMP_USER_MAX_CUSTOMERS} customers in their list. You have {current_count}.",
-            )
-        data["assigned_camp_user_id"] = current_user.id
-        # Ensure it belongs to their camp
-        data["camp_id"] = current_user.camp_id
-        data["region_id"] = current_user.region_id
-        data["district_id"] = current_user.district_id
-        data["province_id"] = current_user.province_id
+    if current_user.role == UserRole.CAMP or current_user.role == "CAMP":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Camp users do not have permission to add customers.",
+        )
+
 
     cnic_val = (payload.cnic and str(payload.cnic).strip()) or None
     if cnic_val:
@@ -373,8 +364,9 @@ def self_assign_customer(
     Allow a Camp User to take ownership of an unassigned customer in their camp.
     """
     user_role = str(current_user.role).upper()
-    if user_role != UserRole.CAMP.value and user_role != "CAMP":
-        raise HTTPException(status_code=403, detail="Only Camp Users can self-assign customers.")
+    if user_role == UserRole.CAMP.value or user_role == "CAMP":
+        raise HTTPException(status_code=403, detail="Camp users do not have permission to add or assign customers.")
+
 
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
