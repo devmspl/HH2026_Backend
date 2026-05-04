@@ -1,23 +1,24 @@
 from sqlalchemy.orm import Session
 from app.models.user import User, ChatGroup, UserRole, Region, Camp, Province, District
 
-ELIGIBLE_REGION_ROLES = ["REGION", "Region", "region", "CAMP", "Camp", "camp", "AGENT", "Agent", "agent"]
-ELIGIBLE_PROVINCE_ROLES = ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "PROVINCIAL", "DISTRICT", "National", "Provincial", "District"]
-ELIGIBLE_DISTRICT_ROLES = ["DISTRICT", "REGION", "District", "Region"]
-
 def sync_user_groups(db: Session, user: User):
     """
     Automatically assigns a user to relevant system groups based on their role and location.
+    Strict Hierarchical Rules:
+    - AGENT: Only Camp Group
+    - CAMP USER: Camp Group + Region Group
+    - REGION USER: Only Region Group
     """
     if not user or user.is_deleted:
         return
 
-    # 1. National Group
-    is_national_eligible = str(user.role).upper() in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL", "NATIONAL USER"]
+    user_role = str(user.role).upper()
+
+    # 1. National Group (For non-restricted roles)
+    is_national_eligible = user_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL", "NATIONAL USER"]
     if is_national_eligible:
         national_group = db.query(ChatGroup).filter(ChatGroup.group_type == "NATIONAL").first()
         if not national_group:
-            # Create it if it doesn't exist yet
             national_group = ChatGroup(name="National HQ Group", manager_id=user.id, group_type="NATIONAL")
             db.add(national_group)
             db.flush()
@@ -25,53 +26,63 @@ def sync_user_groups(db: Session, user: User):
         if user not in national_group.members:
             national_group.members.append(user)
     else:
-        # If no longer eligible, remove
         national_group = db.query(ChatGroup).filter(ChatGroup.group_type == "NATIONAL").first()
         if national_group and user in national_group.members:
             national_group.members.remove(user)
 
-    # 2. Provincial Group
-    if user.province_id:
-        province = db.query(Province).filter(Province.id == user.province_id).first()
-        if province:
-            prov_group = db.query(ChatGroup).filter(ChatGroup.group_type == "PROVINCE", ChatGroup.name.like(f"%{province.name}%")).first()
-            if prov_group:
-                is_prov_eligible = str(user.role).upper() in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "PROVINCIAL", "DISTRICT"]
-                if is_prov_eligible and user not in prov_group.members:
-                    prov_group.members.append(user)
-                elif not is_prov_eligible and user in prov_group.members:
-                    prov_group.members.remove(user)
-
-    # 3. District Group
-    if user.district_id:
-        district = db.query(District).filter(District.id == user.district_id).first()
-        if district:
-            dist_group = db.query(ChatGroup).filter(ChatGroup.group_type == "DISTRICT", ChatGroup.name.like(f"%{district.name}%")).first()
-            if dist_group:
-                is_dist_eligible = str(user.role).upper() in ["DISTRICT", "REGION"]
-                if is_dist_eligible and user not in dist_group.members:
-                    dist_group.members.append(user)
-                elif not is_dist_eligible and user in dist_group.members:
-                    dist_group.members.remove(user)
-
-    # 4. Regional Group
-    if user.region_id:
-        reg_group = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == user.region_id).first()
-        if reg_group:
-            is_reg_eligible = str(user.role).upper() in ["REGION", "CAMP", "AGENT"]
-            if is_reg_eligible and user not in reg_group.members:
-                reg_group.members.append(user)
-            elif not is_reg_eligible and user in reg_group.members:
-                if user in reg_group.members:
-                    reg_group.members.remove(user)
-
-    # 5. Camp Group
+    # 2. Sync CAMP Group
     if user.camp_id:
-        camp = db.query(Camp).filter(Camp.id == user.camp_id).first()
-        if camp:
-            camp_group = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.name.like(f"%{camp.name}%")).first()
-            if camp_group and user not in camp_group.members:
-                camp_group.members.append(user)
+        camp_group = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == user.camp_id).first()
+        
+        if not camp_group:
+            camp = db.query(Camp).filter(Camp.id == user.camp_id).first()
+            camp_name = camp.name if camp else f"ID-{user.camp_id}"
+            camp_group = ChatGroup(
+                name=f"{camp_name} Camp Group",
+                manager_id=user.id,
+                group_type="CAMP",
+                camp_id=user.camp_id
+            )
+            db.add(camp_group)
+            db.flush()
+        
+        # ELIGIBILITY: Agent and Camp User
+        if user_role in ["AGENT", "CAMP"]:
+            # ADD ALL RELATABLE CAMP MEMBERS (Agents and Camp Managers)
+            camp_members = db.query(User).filter(User.camp_id == user.camp_id, User.role.in_(["AGENT", "CAMP"])).all()
+            for member in camp_members:
+                if member not in camp_group.members:
+                    camp_group.members.append(member)
+        else:
+            if user in camp_group.members:
+                camp_group.members.remove(user)
+
+    # 3. Sync REGION Group
+    if user.region_id:
+        region_group = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == user.region_id).first()
+        
+        if not region_group:
+            region = db.query(Region).filter(Region.id == user.region_id).first()
+            region_name = region.name if region else f"ID-{user.region_id}"
+            region_group = ChatGroup(
+                name=f"{region_name} Region Group",
+                manager_id=user.id,
+                group_type="REGION",
+                region_id=user.region_id
+            )
+            db.add(region_group)
+            db.flush()
+        
+        # ELIGIBILITY: Region User and Camp User
+        if user_role in ["REGION", "CAMP"]:
+            # ADD ALL RELATABLE REGION MEMBERS (Region Managers and Camp Managers)
+            region_members = db.query(User).filter(User.region_id == user.region_id, User.role.in_(["REGION", "CAMP"])).all()
+            for member in region_members:
+                if member not in region_group.members:
+                    region_group.members.append(member)
+        else:
+            if user in region_group.members:
+                region_group.members.remove(user)
 
     db.commit()
 
@@ -80,10 +91,7 @@ def sync_all_groups(db: Session):
     Global sync for all groups and all users. 
     Ensures pre-created groups exist and memberships are up-to-date.
     """
-    created_count = 0
-    updated_count = 0
-    
-    # --- National Group ---
+    # Create National Group
     national_group = db.query(ChatGroup).filter(ChatGroup.group_type == "NATIONAL").first()
     national_members = db.query(User).filter(
         User.role.in_([UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL, "National", "EXECUTIVE", "National User"]),
@@ -93,83 +101,31 @@ def sync_all_groups(db: Session):
         if not national_group:
             manager = next((u for u in national_members if u.is_superuser), national_members[0])
             national_group = ChatGroup(name="National HQ Group", manager_id=manager.id, group_type="NATIONAL")
-            national_group.members = national_members
             db.add(national_group)
-            created_count += 1
-        else:
-            national_group.members = national_members
-            updated_count += 1
+            db.flush()
+        national_group.members = national_members
 
-    # --- Provincial Groups ---
-    from app.models.user import Province
-    all_provinces = db.query(Province).all()
-    for prov in all_provinces:
-        prov_group = db.query(ChatGroup).filter(ChatGroup.group_type == "PROVINCE", ChatGroup.name.like(f"%{prov.name}%")).first()
-        prov_members = db.query(User).filter(
-            User.province_id == prov.id, 
-            User.role.in_(ELIGIBLE_PROVINCE_ROLES),
-            User.is_deleted == False
-        ).all()
-        if prov_members:
-            if not prov_group:
-                prov_group = ChatGroup(name=f"{prov.name} Provincial Group", manager_id=prov_members[0].id, group_type="PROVINCE")
-                prov_group.members = prov_members
-                db.add(prov_group)
-                created_count += 1
-            else:
-                prov_group.members = prov_members
-                updated_count += 1
+    # Create Region Groups
+    regions = db.query(Region).all()
+    for reg in regions:
+        group = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == reg.id).first()
+        if not group:
+            group = ChatGroup(name=f"{reg.name} Region Group", group_type="REGION", region_id=reg.id, manager_id=1)
+            db.add(group)
+            db.flush()
+        members = db.query(User).filter(User.region_id == reg.id, User.role.in_(["REGION", "CAMP"])).all()
+        group.members = members
 
-    # --- District Groups ---
-    all_districts = db.query(District).all()
-    for dist in all_districts:
-        dist_group = db.query(ChatGroup).filter(ChatGroup.group_type == "DISTRICT", ChatGroup.name.like(f"%{dist.name}%")).first()
-        dist_members = db.query(User).filter(
-            User.district_id == dist.id, 
-            User.role.in_(ELIGIBLE_DISTRICT_ROLES),
-            User.is_deleted == False
-        ).all()
-        if dist_members:
-            if not dist_group:
-                dist_group = ChatGroup(name=f"{dist.name} District Group", manager_id=dist_members[0].id, group_type="DISTRICT")
-                dist_group.members = dist_members
-                db.add(dist_group)
-                created_count += 1
-            else:
-                dist_group.members = dist_members
-                updated_count += 1
-
-    # --- Regional Groups ---
-    from app.models.user import Region
-    all_regions = db.query(Region).all()
-    for reg in all_regions:
-        reg_group = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == reg.id).first()
-        reg_members = db.query(User).filter(User.region_id == reg.id, User.role.in_(ELIGIBLE_REGION_ROLES), User.is_deleted == False).all()
-        if reg_members:
-            if not reg_group:
-                manager = next((u for u in reg_members if str(u.role).upper() == "REGION"), reg_members[0])
-                reg_group = ChatGroup(name=f"{reg.name} Region Group", manager_id=manager.id, group_type="REGION", region_id=reg.id)
-                reg_group.members = reg_members
-                db.add(reg_group)
-                created_count += 1
-            else:
-                reg_group.members = reg_members
-                updated_count += 1
-
-    # --- Camp Groups ---
-    all_camps = db.query(Camp).all()
-    for camp in all_camps:
-        camp_group = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.name.like(f"%{camp.name}%")).first()
-        camp_members = db.query(User).filter(User.camp_id == camp.id, User.is_deleted == False).all()
-        if camp_members:
-            if not camp_group:
-                camp_group = ChatGroup(name=f"{camp.name} Camp Group", manager_id=camp_members[0].id, group_type="CAMP")
-                camp_group.members = camp_members
-                db.add(camp_group)
-                created_count += 1
-            else:
-                camp_group.members = camp_members
-                updated_count += 1
+    # Create Camp Groups
+    camps = db.query(Camp).all()
+    for camp in camps:
+        group = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == camp.id).first()
+        if not group:
+            group = ChatGroup(name=f"{camp.name} Camp Group", group_type="CAMP", camp_id=camp.id, manager_id=1)
+            db.add(group)
+            db.flush()
+        members = db.query(User).filter(User.camp_id == camp.id, User.role.in_(["AGENT", "CAMP"])).all()
+        group.members = members
 
     db.commit()
-    return created_count, updated_count
+    return True

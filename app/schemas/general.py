@@ -118,6 +118,7 @@ class ChatGroup(BaseModel):
     manager_id: int
     group_type: Optional[str] = None
     region_id: Optional[int] = None
+    camp_id: Optional[int] = None
     members: List[UserSmall] = []
     messages: List[ChatMessage] = []
     class Config:

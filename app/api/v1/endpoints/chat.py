@@ -26,6 +26,37 @@ def get_chat_groups(db: Session = Depends(get_db), current_user: User = Depends(
     # Super admins see everything, others see groups they are members of
     if current_user.is_superuser:
         return db.query(ChatGroup).all()
+    
+    user_role = str(current_user.role).upper()
+    
+    # Always Sync for restricted roles to ensure all team members are present
+    if user_role in ["AGENT", "CAMP"]:
+        from app.services.chat_service import sync_user_groups
+        sync_user_groups(db, current_user)
+        db.refresh(current_user)
+
+    # If the relationship is empty, try a direct query as a fallback
+    groups = current_user.chat_groups
+    if not groups and user_role in ["AGENT", "CAMP", "REGION"]:
+        if user_role == "AGENT" and current_user.camp_id:
+            groups = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == current_user.camp_id).all()
+        elif user_role == "CAMP":
+            groups = db.query(ChatGroup).filter(
+                ((ChatGroup.group_type == "CAMP") & (ChatGroup.camp_id == current_user.camp_id)) |
+                ((ChatGroup.group_type == "REGION") & (ChatGroup.region_id == current_user.region_id))
+            ).all()
+        elif user_role == "REGION" and current_user.region_id:
+            groups = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == current_user.region_id).all()
+
+    if user_role == "AGENT":
+        return [g for g in groups if str(g.group_type).upper() == "CAMP" and g.camp_id == current_user.camp_id]
+    
+    if user_role == "CAMP":
+        return [g for g in groups if (str(g.group_type).upper() == "CAMP" and g.camp_id == current_user.camp_id) or (str(g.group_type).upper() == "REGION" and g.region_id == current_user.region_id)]
+        
+    if user_role == "REGION":
+        return [g for g in groups if str(g.group_type).upper() == "REGION" and g.region_id == current_user.region_id]
+        
     return current_user.chat_groups
 
 @router.get("/fix-db")
@@ -46,6 +77,14 @@ def fix_database_errors(db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         msgs.append(f"region_id error: {e}")
+        
+    try:
+        db.execute(text("ALTER TABLE chat_groups ADD COLUMN camp_id INTEGER REFERENCES camps(id);"))
+        db.commit()
+        msgs.append("Added camp_id to chat_groups")
+    except Exception as e:
+        db.rollback()
+        msgs.append(f"camp_id error: {e}")
         
     try:
         db.execute(text("ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;"))
@@ -99,6 +138,12 @@ def get_or_create_direct_chat(payload: DirectChatRequest, db: Session = Depends(
     is_provincial = cur_role == "PROVINCIAL"
     is_admin = cur_role in ["SUPER_ADMIN", "ADMINISTRATOR"]
     
+    if cur_role in ["CAMP", "AGENT"]:
+        raise HTTPException(status_code=403, detail="Camp and Agent roles are restricted from 1:1 chats. You can only participate in your region group chat.")
+
+    if cur_role in ["CAMP", "AGENT"]:
+        raise HTTPException(status_code=403, detail="1:1 chats are disabled for Camp and Agent roles. Please use group chats.")
+
     if not is_admin and not is_executive:
         # Provincial check
         if is_provincial:
@@ -251,6 +296,25 @@ def get_chat_messages(group_id: int, db: Session = Depends(get_db), current_user
 
 @router.post("/send", response_model=general_schema.ChatMessage)
 def send_chat_message(payload: MessageCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    user_role = str(current_user.role).upper()
+    group = db.query(ChatGroup).filter(ChatGroup.id == payload.chat_group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Chat group not found")
+
+    if user_role == "AGENT":
+        if group.group_type != "CAMP" or group.camp_id != current_user.camp_id:
+            raise HTTPException(status_code=403, detail="Agents can only send messages to their Camp group.")
+
+    elif user_role == "CAMP":
+        is_valid_camp = group.group_type == "CAMP" and group.camp_id == current_user.camp_id
+        is_valid_region = group.group_type == "REGION" and group.region_id == current_user.region_id
+        if not is_valid_camp and not is_valid_region:
+            raise HTTPException(status_code=403, detail="Camp users can only send messages to their Camp or Region groups.")
+
+    elif user_role == "REGION":
+        if group.group_type != "REGION" or group.region_id != current_user.region_id:
+            raise HTTPException(status_code=403, detail="Region users can only send messages to their Region group.")
+
     msg = ChatMessage(
         group_id=payload.chat_group_id,
         sender_id=current_user.id,

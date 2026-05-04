@@ -312,12 +312,14 @@ class ChatGroup(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    group_type = Column(String(50), nullable=True) # "REGION" or None
+    group_type = Column(String(50), nullable=True) # "REGION", "CAMP", or "DIRECT"
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
+    camp_id = Column(Integer, ForeignKey("camps.id"), nullable=True)
     
     members = relationship("User", secondary=chat_group_members, backref="chat_groups")
     messages = relationship("ChatMessage", back_populates="group")
     region = relationship("Region")
+    camp = relationship("Camp")
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
