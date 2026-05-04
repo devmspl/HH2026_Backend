@@ -55,25 +55,70 @@ class CustomerCreate(BaseModel):
     emp_status: Optional[str] = None
     photo: Optional[str] = None
 
-@router.get("/", response_model=List[Any])
+@router.get("/", response_model=Dict[str, Any])
 def get_customers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     skip: int = 0,
     limit: int = 100,
+    search: Optional[str] = None,
+    province_id: Optional[int] = None,
+    district_id: Optional[int] = None,
+    region_id: Optional[int] = None,
+    camp_id: Optional[int] = None,
+    category: Optional[str] = None,
+    membership_status: Optional[str] = None,
+    gender: Optional[str] = None,
 ):
     """
-    Retrieve customers.
-    Camp users see only customers assigned to them or unassigned in their camp.
+    Retrieve customers with advanced searching, hierarchical filtering, and gender support.
     """
     query = db.query(Customer)
+    
+    # 1. Role-Based Access Control (RBAC)
     user_role = str(current_user.role).upper()
-    if user_role == UserRole.CAMP.value or user_role == "CAMP":
-        query = query.filter(
-            Customer.camp_id == current_user.camp_id
+    if user_role == "CAMP":
+        query = query.filter(Customer.camp_id == current_user.camp_id)
+    elif user_role == "REGION_MANAGER":
+        query = query.filter(Customer.region_id == current_user.region_id)
+    
+    # 2. Search Logic
+    if search:
+        search_filter = or_(
+            Customer.full_name.ilike(f"%{search}%"),
+            Customer.phone.ilike(f"%{search}%"),
+            Customer.email.ilike(f"%{search}%"),
+            Customer.cnic.ilike(f"%{search}%"),
+            Customer.customer_id.ilike(f"%{search}%"),
+            Customer.farmer_id.ilike(f"%{search}%")
         )
-    customers = query.offset(skip).limit(limit).all()
-    return [_customer_to_dict(c) for c in customers]
+        query = query.filter(search_filter)
+
+    # 3. Hierarchical Location Filters
+    if province_id:
+        query = query.filter(Customer.province_id == province_id)
+    if district_id:
+        query = query.filter(Customer.district_id == district_id)
+    if region_id:
+        query = query.filter(Customer.region_id == region_id)
+    if camp_id:
+        query = query.filter(Customer.camp_id == camp_id)
+
+    # 4. Status, Category and Gender Filters
+    if category:
+        query = query.filter(Customer.category == category)
+    if membership_status:
+        query = query.filter(Customer.membership_status == membership_status)
+    if gender:
+        query = query.filter(Customer.gender == gender)
+
+    total = query.count()
+    customers = query.order_by(Customer.id.desc()).offset(skip).limit(limit).all()
+    
+    return {
+        "items": [_customer_to_dict(c) for c in customers],
+        "total": total
+    }
 
 @router.post("/", response_model=Any)
 def create_customer(
