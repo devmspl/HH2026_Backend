@@ -12,18 +12,32 @@ def run():
         admin = db.query(User).filter(User.email == admin_email).first()
         if admin:
             admin.hashed_password = get_password_hash(admin_password)
-            print(f"✅ Updated Admin ({admin_email}) to '{admin_password}'")
+            db.commit()
+            print(f"✅ Admin ({admin_email}) password updated.")
         else:
             print(f"❌ Admin {admin_email} not found!")
         
-        # 2. Reset everyone else to Capa@123
-        other_users = db.query(User).filter(User.email != admin_email).all()
-        for user in other_users:
-            user.hashed_password = get_password_hash("Capa@123")
-            print(f"✅ Reset {user.email} ({user.role}) to 'Capa@123'")
+        # 2. Reset everyone else to Capa@123 (Optimized for thousands of users)
+        print("\nStarting batch update for other users...")
+        password_hash = get_password_hash("Capa@123") # Hashing once to save CPU time
+        
+        batch_size = 100
+        count = 0
+        
+        # Count total users to process
+        total_users = db.query(User).filter(User.email != admin_email).count()
+        print(f"Total users to update: {total_users}")
+
+        for i in range(0, total_users, batch_size):
+            batch = db.query(User).filter(User.email != admin_email).offset(i).limit(batch_size).all()
+            for user in batch:
+                user.hashed_password = password_hash
+                count += 1
             
-        db.commit()
-        print("\n--- All passwords updated successfully ---")
+            db.commit() # Commit each batch
+            print(f"Progress: {count}/{total_users} users processed...")
+            
+        print(f"\n--- SUCCESS: {count} passwords updated successfully ---")
     except Exception as e:
         db.rollback()
         print(f"Error: {e}")
