@@ -59,6 +59,7 @@ def login_access_token(
         from app.services.chat_service import sync_user_groups
         sync_user_groups(db, user)
     except Exception as e:
+        db.rollback() # VERY IMPORTANT: Reset the transaction state
         print(f"Error syncing user groups for {user.email}: {e}")
         # We don't raise here, so login continues
     
