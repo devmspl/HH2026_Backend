@@ -54,8 +54,13 @@ def login_access_token(
     user.last_seen = datetime.utcnow()
     db.add(user)
     # Sync groups on login to ensure memberships are up-to-date
-    from app.services.chat_service import sync_user_groups
-    sync_user_groups(db, user)
+    # Wrapped in try-except to prevent login failure if chat sync has issues
+    try:
+        from app.services.chat_service import sync_user_groups
+        sync_user_groups(db, user)
+    except Exception as e:
+        print(f"Error syncing user groups for {user.email}: {e}")
+        # We don't raise here, so login continues
     
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     

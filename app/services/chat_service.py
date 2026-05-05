@@ -110,7 +110,15 @@ def sync_all_groups(db: Session):
     for reg in regions:
         group = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == reg.id).first()
         if not group:
-            group = ChatGroup(name=f"{reg.name} Region Group", group_type="REGION", region_id=reg.id, manager_id=1)
+            # Fallback to current user if manager_id 1 doesn't exist
+            manager_id = user.id if user else 1
+            # Verify if user 1 exists, else use current user
+            if manager_id == 1:
+                u1 = db.query(User).filter(User.id == 1).first()
+                if not u1:
+                    manager_id = user.id
+            
+            group = ChatGroup(name=f"{reg.name} Region Group", group_type="REGION", region_id=reg.id, manager_id=manager_id)
             db.add(group)
             db.flush()
         members = db.query(User).filter(User.region_id == reg.id, User.role.in_(["REGION", "CAMP"])).all()
@@ -121,7 +129,14 @@ def sync_all_groups(db: Session):
     for camp in camps:
         group = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == camp.id).first()
         if not group:
-            group = ChatGroup(name=f"{camp.name} Camp Group", group_type="CAMP", camp_id=camp.id, manager_id=1)
+            # Fallback to current user if manager_id 1 doesn't exist
+            manager_id = user.id if user else 1
+            if manager_id == 1:
+                u1 = db.query(User).filter(User.id == 1).first()
+                if not u1:
+                    manager_id = user.id
+
+            group = ChatGroup(name=f"{camp.name} Camp Group", group_type="CAMP", camp_id=camp.id, manager_id=manager_id)
             db.add(group)
             db.flush()
         members = db.query(User).filter(User.camp_id == camp.id, User.role.in_(["AGENT", "CAMP"])).all()
