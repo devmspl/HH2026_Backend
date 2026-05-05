@@ -332,9 +332,16 @@ async def bulk_upload_customers(
                     continue
 
             def get_int(val):
-                if val and str(val).strip().isdigit():
-                    return int(val)
-                return None
+                if val is None:
+                    return None
+                val_str = str(val).strip()
+                if not val_str:
+                    return None
+                try:
+                    # Handle floats like "1.0" coming from some CSV exports
+                    return int(float(val_str))
+                except (ValueError, TypeError):
+                    return None
 
             customer = Customer(
                 full_name=full_name,
@@ -348,11 +355,11 @@ async def bulk_upload_customers(
                 gender=row.get('gender', '').strip(),
                 category=category,
                 customer_id=row.get('customer_id', row.get('customerid', '')).strip() or None,
-                farmer_id=row.get('farmer_id', row.get('farmerid', '')).strip() or None,
-                camp_id=get_int(row.get('camp_id', row.get('campid'))),
-                region_id=get_int(row.get('region_id', row.get('regionid'))),
-                district_id=get_int(row.get('district_id', row.get('districtid'))),
-                province_id=get_int(row.get('province_id', row.get('provinceid'))),
+                farmer_id=row.get('farmer_id', row.get('farmerid', row.get('farmer id', ''))).strip() or None,
+                camp_id=get_int(row.get('camp_id', row.get('campid', row.get('camp id')))),
+                region_id=get_int(row.get('region_id', row.get('regionid', row.get('region id')))),
+                district_id=get_int(row.get('district_id', row.get('districtid', row.get('district id')))),
+                province_id=get_int(row.get('province_id', row.get('provinceid', row.get('province id')))),
                 membership_status=row.get('membership_status', row.get('membershipstatus', '')).strip(),
                 household=row.get('household', '').strip(),
                 education_level=row.get('education_level', row.get('educationlevel', '')).strip(),
