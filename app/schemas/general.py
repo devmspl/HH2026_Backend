@@ -101,7 +101,8 @@ class ChatMessage(BaseModel):
     group_id: int
     sender_id: int
     sender_name: Optional[str] = None
-    text: str
+    text: Optional[str] = None
+    media_url: Optional[str] = None
     timestamp: datetime
     class Config:
         from_attributes = True
@@ -117,6 +118,8 @@ class ChatGroup(BaseModel):
     name: str
     manager_id: int
     group_type: Optional[str] = None
+    province_id: Optional[int] = None
+    district_id: Optional[int] = None
     region_id: Optional[int] = None
     camp_id: Optional[int] = None
     members: List[UserSmall] = []

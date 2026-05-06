@@ -312,12 +312,16 @@ class ChatGroup(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    group_type = Column(String(50), nullable=True) # "REGION", "CAMP", or "DIRECT"
+    group_type = Column(String(50), nullable=True) # "NATIONAL", "PROVINCIAL", "DISTRICT", "REGION", "CAMP", or "DIRECT"
+    province_id = Column(Integer, ForeignKey("provinces.id"), nullable=True)
+    district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
     camp_id = Column(Integer, ForeignKey("camps.id"), nullable=True)
     
     members = relationship("User", secondary=chat_group_members, backref="chat_groups")
     messages = relationship("ChatMessage", back_populates="group")
+    province = relationship("Province")
+    district = relationship("District")
     region = relationship("Region")
     camp = relationship("Camp")
 
@@ -326,7 +330,8 @@ class ChatMessage(Base):
     id = Column(Integer, primary_key=True, index=True)
     group_id = Column(Integer, ForeignKey("chat_groups.id"), nullable=False)
     sender_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    text = Column(String, nullable=False)
+    text = Column(String, nullable=True) # Text can be null if it's only an image
+    media_url = Column(String(500), nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     
     group = relationship("ChatGroup", back_populates="messages")

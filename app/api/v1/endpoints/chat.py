@@ -1,5 +1,5 @@
-from typing import Any, List
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Any, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.db.session import get_db
@@ -11,7 +11,8 @@ router = APIRouter()
 
 class MessageCreate(BaseModel):
     chat_group_id: int
-    text: str
+    text: Optional[str] = None
+    media_url: Optional[str] = None
 
 class GroupCreate(BaseModel):
     name: str
@@ -21,46 +22,166 @@ from sqlalchemy import text, func
 
 ELIGIBLE_REGION_ROLES = ["REGION", "Region", "region", "CAMP", "Camp", "camp", "AGENT", "Agent", "agent"]
 
-@router.get("/groups", response_model=List[general_schema.ChatGroup])
-def get_chat_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@router.get("/groups")
+def get_chat_groups(
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    group_type: Optional[str] = None,
+    province_id: Optional[int] = None,
+    district_id: Optional[int] = None,
+    region_id: Optional[int] = None,
+    camp_id: Optional[int] = None,
+    search: Optional[str] = None
+):
+    print(f"[DEBUG CHAT] get_chat_groups called by user: {current_user.id} ({current_user.role})")
     # Super admins see everything, others see groups they are members of
+    # Super admins see everything with pagination and filtering
     if current_user.is_superuser:
-        return db.query(ChatGroup).all()
+        query = db.query(ChatGroup)
+        if group_type:
+            query = query.filter(ChatGroup.group_type == group_type)
+        if province_id:
+            query = query.filter(ChatGroup.province_id == province_id)
+        if district_id:
+            query = query.filter(ChatGroup.district_id == district_id)
+        if region_id:
+            query = query.filter(ChatGroup.region_id == region_id)
+        if camp_id:
+            query = query.filter(ChatGroup.camp_id == camp_id)
+        if search:
+            query = query.filter(ChatGroup.name.ilike(f"%{search}%"))
+            
+        total = query.count()
+        
+        # If no hierarchical groups exist yet, try to auto-create them once
+        if total == 0 and group_type in ["NATIONAL", "PROVINCIAL", "DISTRICT", "REGION", "CAMP"]:
+            print(f"[DEBUG CHAT] No groups found for {group_type}, triggering auto-sync")
+            from app.services.chat_service import sync_all_groups
+            sync_all_groups(db)
+            # Re-count and re-query after sync
+            total = query.count()
+            
+        groups = query.offset((page - 1) * limit).limit(limit).all()
+        with open("chat_debug.log", "a") as f:
+            f.write(f"\n[DEBUG CHAT] Super Admin - Page {page}, Limit {limit}, Found {len(groups)} groups for type {group_type}\n")
+            if groups:
+                f.write(f"[DEBUG CHAT] Sample group type: {groups[0].group_type}\n")
+        
+        return {
+            "items": groups,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": (total + limit - 1) // limit
+        }
     
+    # FOR OTHER ROLES: Maintain current behavior but wrap in same structure for consistency
     user_role = str(current_user.role).upper()
     
-    # Always Sync for restricted roles to ensure all team members are present
     if user_role in ["AGENT", "CAMP"]:
         from app.services.chat_service import sync_user_groups
         sync_user_groups(db, current_user)
         db.refresh(current_user)
 
-    # If the relationship is empty, try a direct query as a fallback
     groups = current_user.chat_groups
-    if not groups and user_role in ["AGENT", "CAMP", "REGION"]:
-        if user_role == "AGENT" and current_user.camp_id:
-            groups = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == current_user.camp_id).all()
-        elif user_role == "CAMP":
-            groups = db.query(ChatGroup).filter(
-                ((ChatGroup.group_type == "CAMP") & (ChatGroup.camp_id == current_user.camp_id)) |
-                ((ChatGroup.group_type == "REGION") & (ChatGroup.region_id == current_user.region_id))
-            ).all()
-        elif user_role == "REGION" and current_user.region_id:
-            groups = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == current_user.region_id).all()
-
-    if user_role == "AGENT":
-        return [g for g in groups if str(g.group_type).upper() == "CAMP" and g.camp_id == current_user.camp_id]
     
-    if user_role == "CAMP":
-        return [g for g in groups if (str(g.group_type).upper() == "CAMP" and g.camp_id == current_user.camp_id) or (str(g.group_type).upper() == "REGION" and g.region_id == current_user.region_id)]
+    if not groups:
+        if user_role == "PROVINCIAL":
+            from app.models.user import District, Region, Camp
+            base_query = db.query(ChatGroup).outerjoin(District, ChatGroup.district_id == District.id).outerjoin(Region, ChatGroup.region_id == Region.id).outerjoin(Camp, ChatGroup.camp_id == Camp.id).filter(
+                (ChatGroup.province_id == current_user.province_id) |
+                (District.province_id == current_user.province_id) |
+                (Region.province_id == current_user.province_id) |
+                (Camp.province_id == current_user.province_id)
+            )
+            if group_type:
+                base_query = base_query.filter(ChatGroup.group_type == group_type)
+            groups = base_query.all()
+        elif user_role == "DISTRICT":
+            from app.models.user import Region, Camp
+            base_query = db.query(ChatGroup).outerjoin(Region, ChatGroup.region_id == Region.id).outerjoin(Camp, ChatGroup.camp_id == Camp.id).filter(
+                ((ChatGroup.group_type == "PROVINCIAL") & (ChatGroup.province_id == current_user.province_id)) |
+                ((ChatGroup.group_type == "DISTRICT") & (ChatGroup.district_id == current_user.district_id)) |
+                ((ChatGroup.group_type == "REGION") & (
+                    (ChatGroup.district_id == current_user.district_id) | 
+                    (Region.district_id == current_user.district_id)
+                )) |
+                ((ChatGroup.group_type == "CAMP") & (
+                    (ChatGroup.district_id == current_user.district_id) | 
+                    (Camp.district_id == current_user.district_id)
+                ))
+            )
+            if group_type:
+                base_query = base_query.filter(ChatGroup.group_type == group_type)
+            groups = base_query.all()
+        elif user_role == "REGION":
+            # Region user sees their own Region group 
+            # and all Camp groups that belong to their region (using join for safety)
+            from app.models.user import Camp
+            base_query = db.query(ChatGroup).outerjoin(Camp, ChatGroup.camp_id == Camp.id).filter(
+                ((ChatGroup.group_type == "REGION") & (ChatGroup.region_id == current_user.region_id)) |
+                ((ChatGroup.group_type == "CAMP") & (
+                    (ChatGroup.region_id == current_user.region_id) | 
+                    (Camp.region_id == current_user.region_id)
+                ))
+            )
+            if group_type:
+                base_query = base_query.filter(ChatGroup.group_type == group_type)
+            groups = base_query.all()
+        elif user_role == "CAMP":
+            # Camp user sees their parent Region group and their own Camp group
+            base_query = db.query(ChatGroup).filter(
+                ((ChatGroup.group_type == "REGION") & (ChatGroup.region_id == current_user.region_id)) |
+                ((ChatGroup.group_type == "CAMP") & (ChatGroup.camp_id == current_user.camp_id))
+            )
+            if group_type:
+                base_query = base_query.filter(ChatGroup.group_type == group_type)
+            groups = base_query.all()
+        elif user_role == "AGENT":
+            groups = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == current_user.camp_id).all()
+
+    res = groups
+    
+    # Filter by group_type if provided
+    if group_type:
+        res = [g for g in res if g.group_type == group_type]
+    
+    # Filter by search if provided
+    if search:
+        res = [g for g in res if search.lower() in g.name.lower()]
         
-    if user_role == "REGION":
-        return [g for g in groups if str(g.group_type).upper() == "REGION" and g.region_id == current_user.region_id]
-        
-    return current_user.chat_groups
+    total = len(res)
+    start = (page - 1) * limit
+    end = start + limit
+    paginated_res = res[start:end]
+    
+    items = []
+    for g in paginated_res:
+        items.append({
+            "id": g.id,
+            "name": g.name,
+            "group_type": g.group_type,
+            "manager_id": g.manager_id,
+            "province_id": g.province_id,
+            "district_id": g.district_id,
+            "region_id": g.region_id,
+            "camp_id": g.camp_id,
+            "members": [{"id": m.id, "full_name": m.full_name, "role": m.role} for m in g.members]
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
 
 @router.get("/fix-db")
 def fix_database_errors(db: Session = Depends(get_db)):
+    print("[DEBUG CHAT] fix_database_errors called")
     msgs = []
     try:
         db.execute(text("ALTER TABLE chat_groups ADD COLUMN group_type VARCHAR(50);"))
@@ -70,6 +191,22 @@ def fix_database_errors(db: Session = Depends(get_db)):
         db.rollback()
         msgs.append(f"group_type error: {e}")
         
+    try:
+        db.execute(text("ALTER TABLE chat_groups ADD COLUMN province_id INTEGER REFERENCES provinces(id);"))
+        db.commit()
+        msgs.append("Added province_id to chat_groups")
+    except Exception as e:
+        db.rollback()
+        msgs.append(f"province_id error: {e}")
+
+    try:
+        db.execute(text("ALTER TABLE chat_groups ADD COLUMN district_id INTEGER REFERENCES districts(id);"))
+        db.commit()
+        msgs.append("Added district_id to chat_groups")
+    except Exception as e:
+        db.rollback()
+        msgs.append(f"district_id error: {e}")
+
     try:
         db.execute(text("ALTER TABLE chat_groups ADD COLUMN region_id INTEGER REFERENCES regions(id);"))
         db.commit()
@@ -85,6 +222,15 @@ def fix_database_errors(db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         msgs.append(f"camp_id error: {e}")
+
+    try:
+        db.execute(text("ALTER TABLE chat_messages ADD COLUMN media_url VARCHAR(500);"))
+        db.execute(text("ALTER TABLE chat_messages ALTER COLUMN text DROP NOT NULL;"))
+        db.commit()
+        msgs.append("Added media_url to chat_messages and made text optional")
+    except Exception as e:
+        db.rollback()
+        msgs.append(f"chat_messages migration error: {e}")
         
     try:
         db.execute(text("ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;"))
@@ -94,10 +240,35 @@ def fix_database_errors(db: Session = Depends(get_db)):
         db.rollback()
         msgs.append(f"role error: {e}")
         
+    print(f"[DEBUG CHAT] fix_db completed with logs: {msgs}")
     return {"status": "Complete", "logs": msgs}
+
+@router.get("/search-users", response_model=List[general_schema.RegionMember])
+def search_users_global(
+    q: str = Query("", min_length=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Global user search for Super Admin to start direct chats.
+    """
+    if not current_user.is_superuser and current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Global search restricted to Administrators")
+
+    query = db.query(User).filter(User.is_deleted == False)
+    if q:
+        query = query.filter(
+            (User.full_name.ilike(f"%{q}%")) |
+            (User.email.ilike(f"%{q}%")) |
+            (User.role.ilike(f"%{q}%"))
+        )
+    
+    users = query.limit(50).all()
+    return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "district_id": u.district_id, "province_id": u.province_id} for u in users]
 
 @router.post("/groups", response_model=general_schema.ChatGroup)
 def create_chat_group(payload: GroupCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    print(f"[DEBUG CHAT] create_chat_group called: {payload.name}, members: {payload.member_ids}")
     # 1. Determine if this is a Direct Chat (1:1) vs a Group Chat
     # Direct chat has only 1 other member in member_ids
     is_direct_chat = len(payload.member_ids or []) == 1
@@ -105,6 +276,7 @@ def create_chat_group(payload: GroupCreate, db: Session = Depends(get_db), curre
     # 2. Apply permissions: Only Admin can create Groups (3+ members). Anyone can create Direct (2 members).
     if not is_direct_chat:
         if not current_user.is_superuser and current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+            print("[DEBUG CHAT] Permission denied for multi-member group creation")
             raise HTTPException(status_code=403, detail="Only Administrators can create multi-member chat groups")
 
     db_group = ChatGroup(name=payload.name, manager_id=current_user.id)
@@ -113,11 +285,13 @@ def create_chat_group(payload: GroupCreate, db: Session = Depends(get_db), curre
     member_ids = set(payload.member_ids or [])
     member_ids.add(current_user.id) # Always add creator
     members = db.query(User).filter(User.id.in_(list(member_ids))).all()
+    print(f"[DEBUG CHAT] Adding {len(members)} members to new group")
     db_group.members = members
     
     db.add(db_group)
     db.commit()
     db.refresh(db_group)
+    print(f"[DEBUG CHAT] Group created successfully with ID: {db_group.id}")
     return db_group
 
 class DirectChatRequest(BaseModel):
@@ -125,11 +299,13 @@ class DirectChatRequest(BaseModel):
 
 @router.post("/direct", response_model=general_schema.ChatGroup)
 def get_or_create_direct_chat(payload: DirectChatRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    print(f"[DEBUG CHAT] get_or_create_direct_chat called with target: {payload.target_user_id}")
     """
     Open an existing 1:1 chat or create a new one.
     """
     target_user = db.query(User).filter(User.id == payload.target_user_id).first()
     if not target_user:
+        print("[DEBUG CHAT] Target user not found")
         raise HTTPException(status_code=404, detail="Target user not found")
         
     # Permission Checks
@@ -139,31 +315,25 @@ def get_or_create_direct_chat(payload: DirectChatRequest, db: Session = Depends(
     is_admin = cur_role in ["SUPER_ADMIN", "ADMINISTRATOR"]
     
     if cur_role in ["CAMP", "AGENT"]:
+        print(f"[DEBUG CHAT] Role {cur_role} forbidden from direct chat")
         raise HTTPException(status_code=403, detail="Camp and Agent roles are restricted from 1:1 chats. You can only participate in your region group chat.")
-
-    if cur_role in ["CAMP", "AGENT"]:
-        raise HTTPException(status_code=403, detail="1:1 chats are disabled for Camp and Agent roles. Please use group chats.")
 
     if not is_admin and not is_executive:
         # Provincial check
         if is_provincial:
             if target_user.province_id != current_user.province_id:
+                print("[DEBUG CHAT] Provincial scope violation")
                 raise HTTPException(status_code=403, detail="Provincial users can only chat with users in their province")
-        # Other roles check (for future scalability, restrict to subordinates or geography)
-        # Note: Previous requirements allowed "Agent -> Agent" if in same region.
-        # Keeping it consistent with hierarchy logic if needed.
 
     # 1. Find existing 1:1 chat
     # A 1:1 chat is a group with type "DIRECT" or just 2 members including both.
-    # To be precise, let's look for groups where BOTH are members and total members is 2.
-    from sqlalchemy import and_
-    
     existing_group = None
     # We loop through current user's groups to find a 1:1 with the target user
     for group in current_user.chat_groups:
         if len(group.members) == 2:
             member_ids = [m.id for m in group.members]
             if payload.target_user_id in member_ids and current_user.id in member_ids:
+                print(f"[DEBUG CHAT] Existing direct chat found: {group.id}")
                 existing_group = group
                 break
                 
@@ -171,6 +341,7 @@ def get_or_create_direct_chat(payload: DirectChatRequest, db: Session = Depends(
         return existing_group
         
     # 2. Create new 1:1 chat
+    print("[DEBUG CHAT] Creating new direct chat")
     db_group = ChatGroup(
         name=f"{target_user.full_name}",
         manager_id=current_user.id,
@@ -180,10 +351,12 @@ def get_or_create_direct_chat(payload: DirectChatRequest, db: Session = Depends(
     db.add(db_group)
     db.commit()
     db.refresh(db_group)
+    print(f"[DEBUG CHAT] New direct chat created with ID: {db_group.id}")
     return db_group
 
 @router.post("/groups/auto-create")
 def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    print(f"[DEBUG CHAT] auto_create_hierarchical_groups called by {current_user.id}")
     """
     Automatically create or update chat groups for every manager and their subordinates, 
     and system-wide geographic groups (National, Provincial, District, Regional, Camp).
@@ -194,6 +367,7 @@ def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user:
     
     # 1. Team Groups (Manager + Subordinates)
     managers = db.query(User).filter(User.subordinates.any()).all()
+    print(f"[DEBUG CHAT] Found {len(managers)} managers for team sync")
     for manager in managers:
         group_name = f"{manager.full_name}'s Team"
         existing_group = db.query(ChatGroup).filter(
@@ -212,11 +386,14 @@ def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user:
             updated_count += 1
             
     # 2. System-wide Geographic/Role Groups (National, province, district, region, camp)
+    print("[DEBUG CHAT] Calling sync_all_groups service")
     s_created, s_updated = sync_all_groups(db)
+    print(f"[DEBUG CHAT] sync_all_groups returned: {s_created} created, {s_updated} updated")
     
     created_count += s_created
     updated_count += s_updated
 
+    print(f"[DEBUG CHAT] Auto-sync complete. Total Created: {created_count}, Total Updated: {updated_count}")
     return {
         "message": f"Auto-sync complete: Created {created_count} groups, Updated {updated_count} groups.", 
         "created": created_count,
@@ -318,7 +495,8 @@ def send_chat_message(payload: MessageCreate, db: Session = Depends(get_db), cur
     msg = ChatMessage(
         group_id=payload.chat_group_id,
         sender_id=current_user.id,
-        text=payload.text
+        text=payload.text,
+        media_url=payload.media_url
     )
     db.add(msg)
     db.commit()

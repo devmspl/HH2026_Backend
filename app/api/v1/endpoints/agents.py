@@ -50,8 +50,12 @@ def read_agents(
     """
     Retrieve agents based on role hierarchy and optional role filter with pagination.
     """
+    print(f"[DEBUG AGENTS] read_agents called by {current_user.id} ({current_user.role})")
+    print(f"[DEBUG AGENTS] Params - role: {role}, status: {status}, search: {search}, region: {region_id}, district: {district_id}, camp: {camp_id}")
+    
     skip = (page - 1) * limit
     current_level = get_role_level(current_user.role)
+    print(f"[DEBUG AGENTS] Current user level: {current_level}")
     
     # Base query
     query = db.query(User)
@@ -59,6 +63,7 @@ def read_agents(
     # Filter by specific role if provided
     if role:
         role_upper = role.upper()
+        print(f"[DEBUG AGENTS] Filtering by role: {role_upper}")
         query = query.filter(func.upper(User.role).in_([role_upper, role_upper.title(), role_upper.upper(), role_upper.lower()]))
     
     # Filter by status if provided
@@ -89,7 +94,7 @@ def read_agents(
     is_admin = current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE]
     
     if is_admin:
-        # Senior roles see all roles (National Scope)
+        print("[DEBUG AGENTS] Admin access - using National Scope")
         from app.models.user import SystemRole
         allowed_roles = list(ROLE_HIERARCHY.keys())
         allowed_role_strs = [r.value if hasattr(r, 'value') else str(r) for r in allowed_roles]
@@ -99,7 +104,6 @@ def read_agents(
         for sr in system_roles:
             if get_role_level(sr.name) <= current_level:
                 allowed_role_strs.append(sr.name)
-                # also append title case or upper case as fallback
                 allowed_role_strs.append(sr.name.upper())
                 allowed_role_strs.append(sr.name.title())
                 
@@ -109,17 +113,21 @@ def read_agents(
             allowed_role_strs.append(val.title())
             allowed_role_strs.append(val.upper())
 
+        print(f"[DEBUG AGENTS] Allowed roles count: {len(allowed_role_strs)}")
         # Filter by string match
         query = query.filter(User.role.in_(allowed_role_strs))
         
         # Exclude SUPER_ADMIN from the visible list for everyone EXCEPT SUPER_ADMIN
-        if str(current_user.role).upper() not in ["SUPER_ADMIN", "SUPER_ADMIN", "SUPER_ADMIN"]:
+        cur_role_str = str(current_user.role).upper()
+        if cur_role_str != "SUPER_ADMIN":
+            print("[DEBUG AGENTS] Non-SuperAdmin - excluding other SuperAdmins")
             query = query.filter(
                 User.role != UserRole.SUPER_ADMIN.value,
                 User.role != "SUPER_ADMIN",
-                User.role != "Super_Admin" # case safety
+                User.role != "Super_Admin"
             )
     else:
+        print("[DEBUG AGENTS] Non-admin access - using Subordinate/Geographic Scope")
         # Non-admins only see their recursive subordinates
         to_process = [current_user.id]
         sub_ids = []
@@ -156,14 +164,12 @@ def read_agents(
                 User.is_deleted == False
             ).all()
         elif r == "REGION" and current_user.region_id:
-            # STRICT REGION: Only Agents and Camp Users in their region
             extra_users = db.query(User.id).filter(
                 User.region_id == current_user.region_id,
                 User.role.in_(["CAMP", "Camp", "camp", "AGENT", "Agent", "agent"]),
                 User.is_deleted == False
             ).all()
         elif r == "CAMP" and current_user.camp_id:
-            # STRICT CAMP: Only Agents in their camp
             extra_users = db.query(User.id).filter(
                 User.camp_id == current_user.camp_id,
                 User.role.in_(["AGENT", "Agent", "agent"]),
@@ -172,22 +178,23 @@ def read_agents(
         elif r == "AGENT" and current_user.camp_id:
             extra_users = db.query(User.id).filter(
                 User.camp_id == current_user.camp_id,
-                User.role.in_(["CAMP", "Camp", "AGENT", "Agent"]), # Included fellow agents in the same camp
+                User.role.in_(["CAMP", "Camp", "AGENT", "Agent"]),
                 User.is_deleted == False
             ).all()
             
         for eu in extra_users:
             if eu[0] not in sub_ids:
                 sub_ids.append(eu[0])
-        # ----------------------------------------
         
+        print(f"[DEBUG AGENTS] Total accessible user IDs: {len(sub_ids)}")
         if not sub_ids:
-            return [] # No subordinates
+            print("[DEBUG AGENTS] No accessible users found")
+            return {"items": [], "total": 0, "page": page, "limit": limit, "pages": 0}
             
         query = query.filter(User.id.in_(sub_ids))
     
-    # 3. Apply pagination
     total = query.count()
+    print(f"[DEBUG AGENTS] Total records matching filters: {total}")
     users = query.offset(skip).limit(limit).all()
     
     # 4. Attach approver details for each user
