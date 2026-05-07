@@ -25,7 +25,8 @@ from app.models.user import User, ChatGroup, ChatMessage, Province, District, Re
 from app.core.config import settings
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# 3. Set the database URL dynamically from settings (Escaping % for configparser)
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
