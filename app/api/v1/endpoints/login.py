@@ -103,11 +103,69 @@ def test_token(current_user: User = Depends(get_current_user)) -> Any:
 
 @router.get("/users/me", response_model=user_schema.User)
 def read_user_me(
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """
     Get current user.
     """
+    # 1. Populate Hierarchy Names
+    if current_user.camp_id and current_user.camp:
+        current_user.camp_name = current_user.camp.name
+    if current_user.region_id and current_user.region:
+        current_user.region_name = current_user.region.name
+    if current_user.district_id and current_user.district:
+        current_user.district_name = current_user.district.name
+    if current_user.province_id and current_user.province:
+        current_user.province_name = current_user.province.name
+        
+    # 2. Populate Supervisor Name (mostly for Agents)
+    if current_user.parent_id:
+        supervisor = db.query(User).filter(User.id == current_user.parent_id).first()
+        if supervisor:
+            current_user.supervisor_name = supervisor.full_name
+
+    # 3. Populate Operational Statistics based on role
+    role = str(current_user.role).upper()
+    
+    if role == "CAMP":
+        # Agents in this camp
+        current_user.managed_agents_count = db.query(User).filter(
+            User.camp_id == current_user.camp_id, 
+            User.role == "AGENT"
+        ).count()
+        
+    elif role == "REGION":
+        # Camps in this region
+        current_user.managed_camps_count = db.query(models.user.Camp).filter(
+            models.user.Camp.region_id == current_user.region_id
+        ).count()
+        # Agents in this region
+        current_user.managed_agents_count = db.query(User).filter(
+            User.region_id == current_user.region_id,
+            User.role == "AGENT"
+        ).count()
+        
+    elif role == "DISTRICT":
+        # Regions in this district
+        current_user.managed_regions_count = db.query(models.user.Region).filter(
+            models.user.Region.district_id == current_user.district_id
+        ).count()
+        # Camps in this district
+        current_user.managed_camps_count = db.query(models.user.Camp).filter(
+            models.user.Camp.district_id == current_user.district_id
+        ).count()
+        
+    elif role == "PROVINCIAL":
+        # Districts in this province
+        current_user.managed_districts_count = db.query(models.user.District).filter(
+            models.user.District.province_id == current_user.province_id
+        ).count()
+        # Regions in this province
+        current_user.managed_regions_count = db.query(models.user.Region).filter(
+            models.user.Region.province_id == current_user.province_id
+        ).count()
+
     return current_user
 
 @router.put("/users/me", response_model=user_schema.User)

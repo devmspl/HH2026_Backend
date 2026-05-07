@@ -88,6 +88,11 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationships
+    camp = relationship("Camp", foreign_keys=[camp_id])
+    region = relationship("Region", foreign_keys=[region_id])
+    district = relationship("District", foreign_keys=[district_id])
+    province = relationship("Province", foreign_keys=[province_id])
+
     reports = relationship("Report", back_populates="agent")
     notifications = relationship("NotificationLog", back_populates="recipient", foreign_keys="[NotificationLog.recipient_id]")
 

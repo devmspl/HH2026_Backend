@@ -59,6 +59,19 @@ class User(UserInDBBase):
     approved_at: Optional[datetime] = None
     approver_details: Optional[dict] = None  # Will contain {id, full_name, role, avatar_url}
     system_role: Optional[Role] = None
+    
+    # Hierarchy Metadata (Human Readable Names)
+    camp_name: Optional[str] = None
+    region_name: Optional[str] = None
+    district_name: Optional[str] = None
+    province_name: Optional[str] = None
+    supervisor_name: Optional[str] = None
+    
+    # Operational Statistics
+    managed_agents_count: Optional[int] = 0
+    managed_camps_count: Optional[int] = 0
+    managed_regions_count: Optional[int] = 0
+    managed_districts_count: Optional[int] = 0
 
 # Additional properties stored in DB
 class UserInDB(UserInDBBase):
