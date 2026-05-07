@@ -217,7 +217,7 @@ def get_gis_tracking(
     query = db.query(User).with_entities(
         User.id, User.full_name, User.role, User.last_lat, User.last_lng, 
         User.last_seen, User.province_id, User.district_id, User.region_id, User.camp_id, User.account_status
-    ).filter(User.is_deleted == False, User.last_lat.isnot(None))
+    ).filter(User.is_deleted == False)
     
     # If not admin, apply strict hierarchy
     if not is_admin:
