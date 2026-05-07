@@ -255,7 +255,7 @@ def get_gis_tracking(
             "role": a.role,
             "lat": a.last_lat,
             "lng": a.last_lng,
-            "last_seen": a.last_seen,
+            "last_seen": a.last_seen.isoformat() if a.last_seen else None,
             "status": a.account_status or "offline"
         }
         for a in agents
