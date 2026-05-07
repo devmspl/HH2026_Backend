@@ -200,24 +200,28 @@ def get_gis_tracking(
     current_user: User = Depends(get_current_user),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
+    provinceId: Optional[int] = None,
+    districtId: Optional[int] = None,
+    regionId: Optional[int] = None,
+    campId: Optional[int] = None,
 ):
     """
-    Get live coordinates of agents with pagination.
+    Get live coordinates of agents with pagination and location filters.
     """
     skip = (page - 1) * limit
     # Hierarchy and Location filtering logic
-    is_admin = current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]
-    # Geographic Anchor Check
-    if not current_user.is_superuser:
-        if current_user.region_id or current_user.camp_id or current_user.district_id:
-            is_admin = False
-
-    is_executive = str(current_user.role).upper() == UserRole.EXECUTIVE.value
+    cur_role = str(current_user.role).upper()
+    is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "SUPERADMIN"]
     
-    query = db.query(User).filter(User.is_deleted == False)
+    # Optimization: Only fetch required columns for GIS tracking
+    query = db.query(User).with_entities(
+        User.id, User.full_name, User.role, User.last_lat, User.last_lng, 
+        User.last_seen, User.province_id, User.district_id, User.region_id, User.camp_id, User.account_status
+    ).filter(User.is_deleted == False, User.last_lat.isnot(None))
     
-    if not is_admin and not is_executive:
-        r = str(current_user.role).upper()
+    # If not admin, apply strict hierarchy
+    if not is_admin:
+        r = cur_role
         if r == UserRole.CAMP.value and current_user.camp_id is not None:
             query = query.filter(User.camp_id == current_user.camp_id)
         elif r == UserRole.REGION.value and current_user.region_id is not None:
@@ -227,9 +231,20 @@ def get_gis_tracking(
         elif r == UserRole.PROVINCIAL.value and current_user.province_id is not None:
             query = query.filter(User.province_id == current_user.province_id)
         else:
-            # Fallback: only see themselves/subordinates if no geo-id set
-            # For GIS we might just want to show current user and their children
             query = query.filter((User.id == current_user.id) | (User.parent_id == current_user.id))
+            
+    # Admin or filtered results
+    try:
+        if provinceId:
+            query = query.filter(User.province_id == int(provinceId))
+        if districtId:
+            query = query.filter(User.district_id == int(districtId))
+        if regionId:
+            query = query.filter(User.region_id == int(regionId))
+        if campId:
+            query = query.filter(User.camp_id == int(campId))
+    except (ValueError, TypeError):
+        pass
 
     total = query.count()
     agents = query.offset(skip).limit(limit).all()
@@ -240,10 +255,10 @@ def get_gis_tracking(
             "role": a.role,
             "lat": a.last_lat,
             "lng": a.last_lng,
-            "status": "online" if a.is_active else "offline",
-            "last_seen": a.last_seen.isoformat() if a.last_seen else None
+            "last_seen": a.last_seen,
+            "status": a.account_status or "offline"
         }
-        for a in agents if a.last_lat is not None
+        for a in agents
     ]
     return {
         "items": results,
