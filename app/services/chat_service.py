@@ -87,6 +87,28 @@ def sync_all_groups(db: Session):
     created_count = 0
     updated_count = 0
 
+    # 0. Team Groups (Manager + Subordinates)
+    managers = db.query(User).filter(User.subordinates.any()).all()
+    print(f"[DEBUG SERVICE] Found {len(managers)} managers for team sync")
+    for manager in managers:
+        group_name = f"{manager.full_name}'s Team"
+        existing_group = db.query(ChatGroup).filter(
+            ChatGroup.manager_id == manager.id,
+            ChatGroup.name == group_name
+        ).first()
+        
+        current_members = [manager] + manager.subordinates
+        if not existing_group:
+            new_group = ChatGroup(name=group_name, manager_id=manager.id)
+            new_group.members = current_members
+            db.add(new_group)
+            created_count += 1
+        else:
+            existing_group.members = current_members
+            updated_count += 1
+    
+    db.flush() # Ensure team groups are created before proceeding
+
     # 1. National Group
     national_members = db.query(User).filter(
         or_(

@@ -1,5 +1,5 @@
 from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.db.session import get_db
@@ -355,49 +355,26 @@ def get_or_create_direct_chat(payload: DirectChatRequest, db: Session = Depends(
     return db_group
 
 @router.post("/groups/auto-create")
-def auto_create_hierarchical_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    print(f"[DEBUG CHAT] auto_create_hierarchical_groups called by {current_user.id}")
+async def auto_create_hierarchical_groups(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    print(f"[DEBUG CHAT] auto_create_hierarchical_groups initiated by {current_user.id}")
     """
-    Automatically create or update chat groups for every manager and their subordinates, 
-    and system-wide geographic groups (National, Provincial, District, Regional, Camp).
+    Initiates hierarchical group synchronization in the background to prevent timeouts.
     """
-    from app.services.chat_service import sync_all_groups
-    created_count = 0
-    updated_count = 0
-    
-    # 1. Team Groups (Manager + Subordinates)
-    managers = db.query(User).filter(User.subordinates.any()).all()
-    print(f"[DEBUG CHAT] Found {len(managers)} managers for team sync")
-    for manager in managers:
-        group_name = f"{manager.full_name}'s Team"
-        existing_group = db.query(ChatGroup).filter(
-            ChatGroup.manager_id == manager.id,
-            ChatGroup.name == group_name
-        ).first()
-        
-        current_members = [manager] + manager.subordinates
-        if not existing_group:
-            new_group = ChatGroup(name=group_name, manager_id=manager.id)
-            new_group.members = current_members
-            db.add(new_group)
-            created_count += 1
-        else:
-            existing_group.members = current_members
-            updated_count += 1
-            
-    # 2. System-wide Geographic/Role Groups (National, province, district, region, camp)
-    print("[DEBUG CHAT] Calling sync_all_groups service")
-    s_created, s_updated = sync_all_groups(db)
-    print(f"[DEBUG CHAT] sync_all_groups returned: {s_created} created, {s_updated} updated")
-    
-    created_count += s_created
-    updated_count += s_updated
+    if not current_user.is_superuser and current_user.role not in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR]:
+        raise HTTPException(status_code=403, detail="Only Administrators can trigger global sync")
 
-    print(f"[DEBUG CHAT] Auto-sync complete. Total Created: {created_count}, Total Updated: {updated_count}")
+    from app.services.chat_service import sync_all_groups
+    
+    # Run sync in background
+    background_tasks.add_task(sync_all_groups, db)
+
     return {
-        "message": f"Auto-sync complete: Created {created_count} groups, Updated {updated_count} groups.", 
-        "created": created_count,
-        "updated": updated_count
+        "status": "success",
+        "message": "Hierarchical synchronization started in the background. It may take a few minutes to complete all groups."
     }
 
 @router.post("/groups/{group_id}/members/{user_id}")
