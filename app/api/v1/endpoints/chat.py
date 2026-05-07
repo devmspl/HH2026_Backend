@@ -55,14 +55,7 @@ def get_chat_groups(
             
         total = query.count()
         
-        # If no hierarchical groups exist yet, try to auto-create them once
-        if total == 0 and group_type in ["NATIONAL", "PROVINCIAL", "DISTRICT", "REGION", "CAMP"]:
-            print(f"[DEBUG CHAT] No groups found for {group_type}, triggering auto-sync")
-            from app.services.chat_service import sync_all_groups
-            sync_all_groups(db)
-            # Re-count and re-query after sync
-            total = query.count()
-            
+        total = query.count()
         groups = query.offset((page - 1) * limit).limit(limit).all()
         with open("chat_debug.log", "a") as f:
             f.write(f"\n[DEBUG CHAT] Super Admin - Page {page}, Limit {limit}, Found {len(groups)} groups for type {group_type}\n")
