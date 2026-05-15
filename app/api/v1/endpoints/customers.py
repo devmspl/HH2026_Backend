@@ -415,9 +415,8 @@ def self_assign_customer(
     """
     Allow a Camp User to take ownership of an unassigned customer in their camp.
     """
+    # Allow Camp users (and others) to self-assign if they are part of the camp
     user_role = str(current_user.role).upper()
-    if user_role == UserRole.CAMP.value or user_role == "CAMP":
-        raise HTTPException(status_code=403, detail="Camp users do not have permission to add or assign customers.")
 
 
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
@@ -455,6 +454,35 @@ def self_assign_customer(
     log_action(db, current_user.id, "SELF_ASSIGN_CUSTOMER", f"User {current_user.email} self-assigned customer {customer.full_name}")
     
     return {"message": "Customer successfully assigned to you", "customer": _customer_to_dict(customer)}
+
+
+@router.post("/{customer_id}/unassign-me")
+def unassign_me_customer(
+    customer_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Allow a Camp User to release ownership of a customer.
+    """
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    # Validation: Only the assigned user or admin can unassign
+    user_role = str(current_user.role).upper()
+    if customer.assigned_camp_user_id != current_user.id and user_role not in ["SUPER_ADMIN", "ADMINISTRATOR"]:
+        raise HTTPException(status_code=403, detail="You can only unassign customers assigned to you.")
+
+    # Perform Unassignment
+    customer.assigned_camp_user_id = None
+    
+    db.commit()
+    db.refresh(customer)
+    
+    log_action(db, current_user.id, "UNASSIGN_CUSTOMER", f"User {current_user.email} unassigned customer {customer.full_name}")
+    
+    return {"message": "Customer successfully unassigned", "customer": _customer_to_dict(customer)}
 
 
 @router.delete("/{customer_id}")

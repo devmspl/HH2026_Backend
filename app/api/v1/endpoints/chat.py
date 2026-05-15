@@ -124,16 +124,16 @@ def get_chat_groups(
                 base_query = base_query.filter(ChatGroup.group_type == group_type)
             groups = base_query.all()
         elif user_role == "CAMP":
-            # Camp user sees their parent Region group and their own Camp group
+            # Camp user only sees their parent Region group
             base_query = db.query(ChatGroup).filter(
-                ((ChatGroup.group_type == "REGION") & (ChatGroup.region_id == current_user.region_id)) |
-                ((ChatGroup.group_type == "CAMP") & (ChatGroup.camp_id == current_user.camp_id))
+                (ChatGroup.group_type == "REGION") & (ChatGroup.region_id == current_user.region_id)
             )
             if group_type:
                 base_query = base_query.filter(ChatGroup.group_type == group_type)
             groups = base_query.all()
         elif user_role == "AGENT":
-            groups = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == current_user.camp_id).all()
+            # Agents only see their Region group
+            groups = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == current_user.region_id).all()
 
     res = groups
     
@@ -226,12 +226,15 @@ def fix_database_errors(db: Session = Depends(get_db)):
         msgs.append(f"chat_messages migration error: {e}")
         
     try:
-        db.execute(text("ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;"))
+        # Final cleanup: Remove all legacy CAMP groups
+        db.execute(text("DELETE FROM chat_group_members WHERE chat_group_id IN (SELECT id FROM chat_groups WHERE group_type = 'CAMP');"))
+        db.execute(text("DELETE FROM chat_messages WHERE group_id IN (SELECT id FROM chat_groups WHERE group_type = 'CAMP');"))
+        db.execute(text("DELETE FROM chat_groups WHERE group_type = 'CAMP';"))
         db.commit()
-        msgs.append("Altered role to VARCHAR(50)")
+        msgs.append("DELETED all legacy CAMP chat groups per client requirement.")
     except Exception as e:
         db.rollback()
-        msgs.append(f"role error: {e}")
+        msgs.append(f"Cleanup error: {e}")
         
     print(f"[DEBUG CHAT] fix_db completed with logs: {msgs}")
     return {"status": "Complete", "logs": msgs}
@@ -309,7 +312,7 @@ def get_or_create_direct_chat(payload: DirectChatRequest, db: Session = Depends(
     
     if cur_role in ["CAMP", "AGENT"]:
         print(f"[DEBUG CHAT] Role {cur_role} forbidden from direct chat")
-        raise HTTPException(status_code=403, detail="Camp and Agent roles are restricted from 1:1 chats. You can only participate in your region group chat.")
+        raise HTTPException(status_code=403, detail="Camp and Agent roles are restricted from 1:1 chats. You participate in the Region group chat.")
 
     if not is_admin and not is_executive:
         # Provincial check
@@ -448,15 +451,9 @@ def send_chat_message(payload: MessageCreate, db: Session = Depends(get_db), cur
     if not group:
         raise HTTPException(status_code=404, detail="Chat group not found")
 
-    if user_role == "AGENT":
-        if group.group_type != "CAMP" or group.camp_id != current_user.camp_id:
-            raise HTTPException(status_code=403, detail="Agents can only send messages to their Camp group.")
-
-    elif user_role == "CAMP":
-        is_valid_camp = group.group_type == "CAMP" and group.camp_id == current_user.camp_id
-        is_valid_region = group.group_type == "REGION" and group.region_id == current_user.region_id
-        if not is_valid_camp and not is_valid_region:
-            raise HTTPException(status_code=403, detail="Camp users can only send messages to their Camp or Region groups.")
+    if user_role in ["AGENT", "CAMP", "REGION"]:
+        if group.group_type != "REGION" or group.region_id != current_user.region_id:
+            raise HTTPException(status_code=403, detail=f"{user_role.capitalize()} users can only send messages to their assigned Region group.")
 
     elif user_role == "REGION":
         if group.group_type != "REGION" or group.region_id != current_user.region_id:
@@ -481,25 +478,12 @@ def get_region_members(db: Session = Depends(get_db), current_user: User = Depen
     if not current_user.region_id:
         return []
 
-    # Per requirement: Regional users only see Agents and Camp users
-    # We filter ELIGIBLE_REGION_ROLES based on current user role
-    allowed_roles = ELIGIBLE_REGION_ROLES
-    cur_role_upper = str(current_user.role).upper()
-    
-    if cur_role_upper == "REGION":
-        allowed_roles = [r for r in ELIGIBLE_REGION_ROLES if "REGION" not in r.upper()]
-    elif cur_role_upper == "CAMP":
-        # Camp users only see agents in their camp
-        allowed_roles = [r for r in ELIGIBLE_REGION_ROLES if "AGENT" in r.upper()]
-
+    # All members of the region (Region User, Camp Users, Agents)
     query = db.query(User).filter(
         User.region_id == current_user.region_id,
-        User.role.in_(allowed_roles),
+        User.role.in_(ELIGIBLE_REGION_ROLES),
         User.is_deleted == False
     )
-
-    if str(current_user.role).upper() == "CAMP" and current_user.camp_id:
-        query = query.filter(User.camp_id == current_user.camp_id)
 
     users = query.all()
     return [{"id": u.id, "name": u.full_name, "role": u.role, "region_id": u.region_id, "profession": getattr(u, "profession", None)} for u in users]

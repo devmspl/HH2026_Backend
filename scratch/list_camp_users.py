@@ -10,15 +10,9 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 db = SessionLocal()
 try:
-    users = db.query(User).filter(User.role == "CAMP").limit(5).all()
     print("--- CAMP USERS ---")
-    if not users:
-        print("No CAMP users found. Listing all roles:")
-        all_users = db.query(User).limit(5).all()
-        for u in all_users:
-            print(f"Email: {u.email} | Role: {u.role}")
-    else:
-        for u in users:
-            print(f"Email: {u.email} | Role: {u.role} | Full Name: {u.full_name}")
+    users = db.query(User.email, User.full_name).filter(User.role == "CAMP").limit(10).all()
+    for u in users:
+        print(f"Email: {u.email} | Name: {u.full_name}")
 finally:
     db.close()

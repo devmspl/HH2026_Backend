@@ -35,7 +35,7 @@ def get_dashboard_stats(
     
     if not is_admin:
         # 1. Determine the strict user scope based on Role and Location
-        if cur_role == "CAMP" and current_user.camp_id:
+        if (cur_role == "CAMP" or cur_role == "AGENT") and current_user.camp_id:
             # STRICT CAMP ANCHOR: Only see users in this camp
             scope_users = db.query(User.id).filter(
                 User.camp_id == current_user.camp_id, 
@@ -79,7 +79,7 @@ def get_dashboard_stats(
     # Others are restricted to their hierarchy/location.
     if not is_admin and not is_executive:
         # STRICT ROLE-BASED SCOPING
-        if cur_role == "CAMP" and current_user.camp_id:
+        if (cur_role == "CAMP" or cur_role == "AGENT") and current_user.camp_id:
             # 1. Total Agents in this specific Camp
             total_agents = db.query(User).filter(
                 User.camp_id == current_user.camp_id,
@@ -116,7 +116,10 @@ def get_dashboard_stats(
 
         
         # Reports = from anyone in my scope (including me)
-        report_q = report_q.filter(Report.agent_id.in_(user_ids_in_hierarchy))
+        if cur_role == "AGENT":
+            report_q = report_q.filter(Report.agent_id == current_user.id)
+        else:
+            report_q = report_q.filter(Report.agent_id.in_(user_ids_in_hierarchy))
     else:
         # Admin metrics
         # Total Agents = all agents except SUPER_ADMINs
@@ -166,6 +169,40 @@ def get_dashboard_stats(
             })
     except Exception:
         pass
+    # Farmer and Affiliation Metrics
+    from app.models.user import Customer, Camp, Region, Province
+    
+    total_farmers = 0
+    affiliated_farmers = 0
+    total_expected_reports = 0
+
+    if is_admin or is_executive:
+        total_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
+        if not total_farmers:
+            total_farmers = db.query(Customer).count() # Fallback to registered
+        affiliated_farmers = db.query(Customer).count()
+        total_expected_reports = total_agents
+    elif cur_role == "AGENT":
+        camp = db.query(Camp).filter(Camp.id == current_user.camp_id).first()
+        total_farmers = camp.total_customers if camp else 0
+        affiliated_farmers = db.query(Customer).filter(Customer.camp_id == current_user.camp_id).count()
+        total_expected_reports = 1 # Each agent is expected to submit 1 report
+    elif cur_role == "CAMP" and current_user.camp_id:
+        camp = db.query(Camp).filter(Camp.id == current_user.camp_id).first()
+        total_farmers = camp.total_customers if camp else 0
+        affiliated_farmers = db.query(Customer).filter(Customer.camp_id == current_user.camp_id).count()
+        total_expected_reports = total_agents
+    elif current_user.region_id:
+        region = db.query(Region).filter(Region.id == current_user.region_id).first()
+        total_farmers = region.total_customers if region else 0
+        affiliated_farmers = db.query(Customer).filter(Customer.region_id == current_user.region_id).count()
+        total_expected_reports = total_agents
+    else:
+        # Fallback for other roles/geographies
+        total_farmers = 0
+        affiliated_farmers = 0
+        total_expected_reports = 0
+
     return {
         "total_agents": total_agents,
         "active_agents": active_agents,
@@ -175,7 +212,10 @@ def get_dashboard_stats(
         "pending_reports": pending_reports,
         "approved_reports": approved_reports,
         "rejected_reports": rejected_reports,
-        "report_trend": trend
+        "report_trend": trend,
+        "total_farmers": total_farmers,
+        "affiliated_farmers": affiliated_farmers,
+        "total_expected_reports": total_expected_reports
     }
 
 def _get_station_location(db: Session) -> Optional[tuple]:

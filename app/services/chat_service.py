@@ -23,19 +23,19 @@ def sync_user_groups(db: Session, user: User):
         if user not in national_group.members:
             national_group.members.append(user)
     
-    # 2. Sync CAMP Group
-    if user.camp_id:
-        camp_group = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == user.camp_id).first()
-        if not camp_group:
-            camp = db.query(Camp).filter(Camp.id == user.camp_id).first()
-            camp_name = camp.name if camp else f"ID-{user.camp_id}"
-            camp_group = ChatGroup(name=f"{camp_name} Camp Group", manager_id=user.id, group_type="CAMP", camp_id=user.camp_id)
-            db.add(camp_group)
+    # 2. Sync Region Group (for Region, Camp, and Agent users)
+    if user.region_id:
+        region_group = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == user.region_id).first()
+        if not region_group:
+            region = db.query(Region).filter(Region.id == user.region_id).first()
+            region_name = region.name if region else f"Region-{user.region_id}"
+            region_group = ChatGroup(name=f"{region_name} Group", manager_id=user.id, group_type="REGION", region_id=user.region_id)
+            db.add(region_group)
             db.flush()
         
-        if user_role in ["AGENT", "CAMP"]:
-            if user not in camp_group.members:
-                camp_group.members.append(user)
+        if user_role in ["AGENT", "CAMP", "REGION"]:
+            if user not in region_group.members:
+                region_group.members.append(user)
     
     db.commit()
 
@@ -94,24 +94,28 @@ def sync_all_groups(db: Session):
         group.members = members
     db.commit()
 
-    # PRIORITY 4: Region Groups (Small subset)
+    # PRIORITY 4: Region Groups (Combined for Region, Camp, and Agent)
     regions = db.query(Region).all()
-    print(f"[DEBUG SERVICE] Syncing {len(regions)} Regions")
+    print(f"[DEBUG SERVICE] Syncing {len(regions)} Regions (includes Region/Camp/Agent users)")
     for reg in regions:
         group = db.query(ChatGroup).filter(ChatGroup.group_type == "REGION", ChatGroup.region_id == reg.id).first()
         if not group:
             admin = db.query(User).filter(User.is_superuser == True).first()
-            group = ChatGroup(name=f"{reg.name} Region Group", group_type="REGION", region_id=reg.id, manager_id=admin.id if admin else 1)
+            group = ChatGroup(name=f"{reg.name} Group", group_type="REGION", region_id=reg.id, manager_id=admin.id if admin else 1)
             db.add(group)
             db.flush()
             created_count += 1
-        members = db.query(User).filter(User.region_id == reg.id, User.role.in_(["REGION", "CAMP"])).all()
+        # Include all users in the region regardless of camp
+        members = db.query(User).filter(
+            User.region_id == reg.id, 
+            User.role.in_(["REGION", "CAMP", "AGENT"]),
+            User.is_deleted == False
+        ).all()
         group.members = members
     db.commit()
 
-    # PRIORITY 5: Team Groups & Camps (HEAVY - 12,000+ rows)
-    # We set group_type to 'TEAM' to avoid NULLs
-    print("[DEBUG SERVICE] Syncing Team Groups (HEAVY)")
+    # PRIORITY 5: Team Groups (Manager + Subordinates)
+    print("[DEBUG SERVICE] Syncing Team Groups")
     managers = db.query(User).filter(User.subordinates.any()).all()
     for manager in managers:
         group_name = f"{manager.full_name}'s Team"
@@ -123,19 +127,8 @@ def sync_all_groups(db: Session):
         group.members = [manager] + manager.subordinates
     db.commit()
 
-    # Finally Camps
-    print("[DEBUG SERVICE] Syncing Camp Groups (HEAVY)")
-    camps = db.query(Camp).all()
-    for camp in camps:
-        group = db.query(ChatGroup).filter(ChatGroup.group_type == "CAMP", ChatGroup.camp_id == camp.id).first()
-        if not group:
-            admin = db.query(User).filter(User.is_superuser == True).first()
-            group = ChatGroup(name=f"{camp.name} Camp Group", group_type="CAMP", camp_id=camp.id, manager_id=admin.id if admin else 1)
-            db.add(group)
-            created_count += 1
-        members = db.query(User).filter(User.camp_id == camp.id, User.role.in_(["AGENT", "CAMP"])).all()
-        group.members = members
-    db.commit()
+    # Note: CAMP groups are intentionally REMOVED per client requirement.
+    # Agents and Camp Users now join their parent Region group instead.
 
     print(f"[DEBUG SERVICE] Full Sync Complete: {created_count} created")
     return created_count, updated_count
