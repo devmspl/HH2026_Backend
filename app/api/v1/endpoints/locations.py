@@ -57,6 +57,8 @@ class ProvinceCreate(BaseModel):
 class ProvinceUpdate(BaseModel):
     name: Optional[str] = None
     main_crop_family_id: Optional[int] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 # District schemas
 class DistrictCreate(BaseModel):
@@ -70,6 +72,8 @@ class DistrictUpdate(BaseModel):
     province_id: Optional[int] = None
     district_type: Optional[str] = None
     main_crop_family_id: Optional[int] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 # Region schemas
 class RegionCreate(BaseModel):
@@ -85,6 +89,8 @@ class RegionUpdate(BaseModel):
     province_id: Optional[int] = None
     region_type: Optional[str] = None
     main_crop_family_id: Optional[int] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 # Camp schemas
 class CampCreate(BaseModel):
@@ -100,6 +106,8 @@ class CampUpdate(BaseModel):
     district_id: Optional[int] = None
     province_id: Optional[int] = None
     camp_type: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 class CampOut(BaseModel):
     id: int
@@ -108,6 +116,8 @@ class CampOut(BaseModel):
     district_id: Optional[int] = None
     province_id: Optional[int] = None
     camp_type: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
     total_customers: int
     model_config = ConfigDict(from_attributes=True)
 
@@ -302,9 +312,10 @@ def list_provinces(
 ) -> Any:
     """List all provinces (id, name, total_customers, main_crop_family_name) for dropdowns and management."""
     cur_role = str(current_user.role).upper()
+    is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL", "SUPERADMIN"]
     query = db.query(Province).options(joinedload(Province.main_crop_family)).order_by(Province.name)
     
-    if cur_role not in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]:
+    if not is_admin:
         if current_user.province_id:
             query = query.filter(Province.id == current_user.province_id)
             
@@ -330,11 +341,12 @@ def list_districts(
 ) -> Any:
     """List districts; optional filter by province_id. Returns customer counts and main crop family."""
     cur_role = str(current_user.role).upper()
+    is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL", "SUPERADMIN"]
     query = db.query(District).options(joinedload(District.main_crop_family)).order_by(District.name)
     if province_id is not None:
         query = query.filter(District.province_id == province_id)
     
-    if cur_role not in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]:
+    if not is_admin:
         if current_user.district_id:
             query = query.filter(District.id == current_user.district_id)
         elif current_user.province_id:
@@ -660,6 +672,10 @@ def update_province(
         province.name = payload.name
     if payload.main_crop_family_id is not None:
         province.main_crop_family_id = payload.main_crop_family_id
+    if payload.lat is not None:
+        province.lat = payload.lat
+    if payload.lng is not None:
+        province.lng = payload.lng
     db.commit()
     db.refresh(province)
     return {"id": province.id, "name": province.name, "main_crop_family_id": province.main_crop_family_id}
@@ -728,6 +744,10 @@ def update_district(
         district.district_type = payload.district_type
     if payload.main_crop_family_id is not None:
         district.main_crop_family_id = payload.main_crop_family_id
+    if payload.lat is not None:
+        district.lat = payload.lat
+    if payload.lng is not None:
+        district.lng = payload.lng
     db.commit()
     db.refresh(district)
     return {"id": district.id, "name": district.name, "province_id": district.province_id, "district_type": district.district_type, "main_crop_family_id": district.main_crop_family_id}
@@ -805,6 +825,10 @@ def update_region(
         region.region_type = payload.region_type
     if payload.main_crop_family_id is not None:
         region.main_crop_family_id = payload.main_crop_family_id
+    if payload.lat is not None:
+        region.lat = payload.lat
+    if payload.lng is not None:
+        region.lng = payload.lng
     db.commit()
     db.refresh(region)
     return {"id": region.id, "name": region.name, "district_id": region.district_id, "province_id": region.province_id, "region_type": region.region_type, "main_crop_family_id": region.main_crop_family_id}
@@ -918,6 +942,10 @@ def update_camp(
         camp.province_id = payload.province_id
     if payload.camp_type is not None:
         camp.camp_type = payload.camp_type
+    if payload.lat is not None:
+        camp.lat = payload.lat
+    if payload.lng is not None:
+        camp.lng = payload.lng
     db.commit()
     db.refresh(camp)
     return {"id": camp.id, "name": camp.name, "region_id": camp.region_id, "district_id": camp.district_id, "province_id": camp.province_id, "camp_type": camp.camp_type}

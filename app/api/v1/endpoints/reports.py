@@ -14,6 +14,23 @@ import json
 router = APIRouter()
 
 
+def apply_hierarchy_filter(query, current_user: User):
+    """Applies scoping filters to queries based on the logged-in user's role and hierarchy assignment."""
+    if current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL]:
+        return query
+    
+    if current_user.role == UserRole.PROVINCIAL:
+        return query.filter(Report.province_id == current_user.province_id)
+    elif current_user.role == UserRole.DISTRICT:
+        return query.filter(Report.district_id == current_user.district_id)
+    elif current_user.role == UserRole.REGION:
+        return query.filter(Report.region_id == current_user.region_id)
+    elif current_user.role in [UserRole.CAMP, UserRole.AGENT]:
+        return query.filter(Report.agent_id == current_user.id)
+    
+    return query
+
+
 def _aggregate_national_crop_reports(
     reports: List[Report], 
     crop_id_map: Optional[Dict[str, str]] = None,
@@ -134,7 +151,11 @@ def _aggregate_national_crop_reports(
     rows: List[general_schema.NationalCropRow] = []
     for (crop_name, family_name, crop_id), metrics in crop_agg.items():
         yield_tonnes = metrics["yield_tonnes"]
-        pct_of_p = (participating_customers_total / participating_customers_total * 100.0) if participating_customers_total > 0 else 0
+        
+        # Client requested formula: Yield / (Total Participating - Spoiled) * 100
+        valid_participants = participating_customers_total - spoiled_responses
+        pct_of_p = (yield_tonnes / valid_participants * 100.0) if valid_participants > 0 else 0.0
+        
         pct_of_a = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else 0
         rows.append(general_schema.NationalCropRow(
             crop_id=crop_id, crop_name=crop_name, family_name=family_name, 
@@ -200,13 +221,8 @@ def read_reports(
     if end_date:
         query = query.filter(Report.created_at <= end_date)
 
-    # Visibility constraints
-    if current_user.role == UserRole.AGENT:
-        query = query.filter(Report.agent_id == current_user.id)
-    elif str(current_user.role).upper() == "CAMP" and current_user.camp_id:
-        query = query.filter(Report.camp_id == current_user.camp_id)
-    elif str(current_user.role).upper() == "REGION" and current_user.region_id:
-        query = query.filter(Report.region_id == current_user.region_id)
+    # Hierarchy scoping
+    query = apply_hierarchy_filter(query, current_user)
 
     total = query.count()
     reports = query.order_by(Report.created_at.desc()).offset(skip).limit(limit).all()
@@ -279,6 +295,7 @@ def get_national_crop_report(
             (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey")
         )
     )
+    query = apply_hierarchy_filter(query, current_user)
     reports = query.all()
 
     # Pre-fetch crops for ID mapping
@@ -286,11 +303,21 @@ def get_national_crop_report(
     crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
     id_map = {c.crop_name: str(c.id) for c in crops_info}
 
-    # Fetch true system total farmers
-    from app.models.user import Customer
-    total_system_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
-    if not total_system_farmers:
-        total_system_farmers = db.query(Customer).count()
+    # Hierarchy-scoped total system farmers
+    from app.models.user import Customer, Province, District, Region
+    
+    if current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL]:
+        total_system_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
+        if not total_system_farmers:
+            total_system_farmers = db.query(Customer).count()
+    elif current_user.role == UserRole.PROVINCIAL:
+        total_system_farmers = db.query(Province.total_customers).filter(Province.id == current_user.province_id).scalar() or 0
+    elif current_user.role == UserRole.DISTRICT:
+        total_system_farmers = db.query(District.total_customers).filter(District.id == current_user.district_id).scalar() or 0
+    elif current_user.role == UserRole.REGION:
+        total_system_farmers = db.query(Region.total_customers).filter(Region.id == current_user.region_id).scalar() or 0
+    else:
+        total_system_farmers = 0
 
     total_farmers, participating_farmers, spoiled_responses, rows, families = _aggregate_national_crop_reports(
         reports, id_map, total_system_farmers=total_system_farmers
@@ -317,6 +344,7 @@ def get_provincial_crop_report(
         .join(Survey, Report.survey_id == Survey.id)
         .filter(Survey.form_type == "National Crops Survey", Report.province_id == province_id)
     )
+    query = apply_hierarchy_filter(query, current_user)
     reports = query.all()
 
     crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
@@ -350,6 +378,7 @@ def get_district_crop_report(
         .join(Survey, Report.survey_id == Survey.id)
         .filter(Survey.form_type == "National Crops Survey", Report.district_id == district_id)
     )
+    query = apply_hierarchy_filter(query, current_user)
     reports = query.all()
 
     crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
@@ -383,6 +412,7 @@ def get_region_crop_report(
         .join(Survey, Report.survey_id == Survey.id)
         .filter(Survey.form_type == "National Crops Survey", Report.region_id == region_id)
     )
+    query = apply_hierarchy_filter(query, current_user)
     reports = query.all()
 
     crops_info = db.query(NationalCrop.crop_name, NationalCrop.id).all()
@@ -591,8 +621,10 @@ def get_regional_crops_tally(
     active_customers_total = int(total_system_farmers) if total_system_farmers else int(total_report_farmers)
     participating_customers_total = int(participating_farmers)
     
-    # Percentage against system total
+    # Percentage against system total (Fallback if needed)
     percent_participation = (participating_customers_total / active_customers_total * 100.0) if active_customers_total > 0 else 0.0
+
+    valid_participants = participating_customers_total - spoiled_responses
 
     rows: List[general_schema.RegionalCropTallyRow] = []
     for (rid, crop_name, family_name, crop_id), metrics in agg.items():
@@ -608,7 +640,7 @@ def get_regional_crops_tally(
                 yield_tonnes=metrics["yield_tonnes"],
                 active_customers=active_customers_total if active_customers_total > 0 else 0,
                 participating_customers=participating_customers_total if participating_customers_total > 0 else 0,
-                percent_of_pcustomers=percent_participation,
+                percent_of_pcustomers=(metrics["yield_tonnes"] / valid_participants * 100.0) if valid_participants > 0 else 0.0,
                 percent_of_acustomers=percent_participation,
             )
         )
@@ -1103,8 +1135,16 @@ def get_top_family_by_province(
     Returns which crop family is top (by yield) in how many provinces.
     Used for 'Regional Crop Graph by Family'.
     """
-    from app.models.user import Province # Assuming Province model is here or available
-    provinces = db.query(Province).all()
+    from app.models.user import Province
+    prov_query = db.query(Province)
+    if not (current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL]):
+        if current_user.province_id:
+            prov_query = prov_query.filter(Province.id == current_user.province_id)
+        else:
+            # If they don't have a province but aren't admin, they see nothing
+            return {"rows": []}
+            
+    provinces = prov_query.all()
     
     family_stats = {}
     
@@ -1165,10 +1205,16 @@ def get_dominant_crop_map(
     Returns dominant family for each province and region by yield.
     Used for 'GIS Domination Map'.
     """
-    from app.models.user import Province, Region # Assuming they are in models.user or similar
+    from app.models.user import Province, Region
     
     # 1. By Province
-    provinces = db.query(Province).all()
+    prov_query = db.query(Province)
+    if not (current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL]):
+        if current_user.province_id:
+            prov_query = prov_query.filter(Province.id == current_user.province_id)
+        else:
+            prov_query = prov_query.filter(Province.id == -1) # Empty
+    provinces = prov_query.all()
     by_province = []
     for prov in provinces:
         reports = db.query(Report).filter(
@@ -1198,7 +1244,17 @@ def get_dominant_crop_map(
             })
 
     # 2. By Region
-    regions = db.query(Region).all()
+    reg_query = db.query(Region)
+    if not (current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL]):
+        if current_user.region_id:
+            reg_query = reg_query.filter(Region.id == current_user.region_id)
+        elif current_user.district_id:
+            reg_query = reg_query.filter(Region.district_id == current_user.district_id)
+        elif current_user.province_id:
+            reg_query = reg_query.join(District).filter(District.province_id == current_user.province_id)
+        else:
+            reg_query = reg_query.filter(Region.id == -1)
+    regions = reg_query.all()
     by_region = []
     for reg in regions:
         reports = db.query(Report).filter(
@@ -1230,3 +1286,65 @@ def get_dominant_crop_map(
             })
             
     return {"by_province": by_province, "by_region": by_region}
+
+@router.get("/crop-domination/provinces")
+def get_crop_domination_provinces(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.user import Province
+    provinces = db.query(Province).all()
+    
+    color_map = {
+        "Maize": "#F87171",      # Red
+        "Wheat": "#60A5FA",      # Blue
+        "Rice": "#4ADE80",       # Green
+        "Soybeans": "#FBBF24",   # Yellow/Orange
+        "Cassava": "#C084FC",    # Purple
+        "Sorghum": "#A78BFA",    # Indigo
+        "Millet": "#FACC15",     # Yellow
+        "Groundnuts": "#D97706", # Brown/Amber
+        "Cotton": "#93C5FD",     # Light Blue
+        "Tobacco": "#34D399",    # Emerald
+        "Sunflower": "#FDE047",  # Yellow
+        "Cereals": "#2ecc71",    # Green
+        "Legumes": "#3498db",    # Blue
+        "Tubers": "#9b59b6",     # Purple
+        "Vegetables": "#e74c3c", # Red
+        "Fruits": "#f39c12",     # Orange
+        "Other": "#95a5a6"       # Gray
+    }
+    default_color = "rgba(156, 163, 175, 0.4)"    # Transparent Gray for No Data
+    
+    result = []
+    for prov in provinces:
+        reports = db.query(Report).filter(
+            Report.province_id == prov.id
+        ).all()
+        if not reports: continue
+        
+        family_yields = {}
+        for report in reports:
+            if not report.survey_data: continue
+            try:
+                data = json.loads(report.survey_data)
+                for crop in data.get("crops", []):
+                    f_name = crop.get("family_name") or "Other"
+                    f_yield = float(crop.get("yield_tonnes") or 0)
+                    family_yields[f_name] = family_yields.get(f_name, 0) + f_yield
+            except: continue
+        
+        if family_yields:
+            top_f = max(family_yields.items(), key=lambda x: x[1])
+            dom_fam = top_f[0]
+            # Match coloring dynamically based on some common ones or fallback
+            color = color_map.get(dom_fam, default_color)
+            
+            result.append({
+                "province_name": prov.name,
+                "dominant_crop_family": dom_fam,
+                "total_yield": top_f[1],
+                "color": color
+            })
+            
+    return result

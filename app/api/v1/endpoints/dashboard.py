@@ -1,10 +1,11 @@
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, or_, cast, String, and_
+from datetime import datetime
 from app.core.auth import get_current_user
 from app.db.session import get_db
-from app.models.user import User, UserRole, Report, NotificationLog, AuditLog, ReportMedia, SystemConfiguration
+from app.models.user import User, UserRole, Report, NotificationLog, AuditLog, ReportMedia, SystemConfiguration, Camp, Region, District, Province
 from app.schemas import general as general_schema
 import json
 
@@ -53,6 +54,13 @@ def get_dashboard_stats(
             # DISTRICT ANCHOR
             scope_users = db.query(User.id).filter(
                 User.district_id == current_user.district_id, 
+                User.is_deleted == False
+            ).all()
+            user_ids_in_hierarchy = [u[0] for u in scope_users]
+        elif cur_role == "PROVINCIAL" and current_user.province_id:
+            # STRICT PROVINCE ANCHOR
+            scope_users = db.query(User.id).filter(
+                User.province_id == current_user.province_id, 
                 User.is_deleted == False
             ).all()
             user_ids_in_hierarchy = [u[0] for u in scope_users]
@@ -111,8 +119,18 @@ def get_dashboard_stats(
         else:
             # Managed Agents = people in hierarchy/location EXCEPT current user (Fallback)
             managed_user_ids = [uid for uid in user_ids_in_hierarchy if uid != current_user.id]
-            total_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False).count() if managed_user_ids else 0
-            active_agents = db.query(User).filter(User.id.in_(managed_user_ids), User.is_deleted == False, User.is_active == True).count() if managed_user_ids else 0
+            total_agents = db.query(User).filter(
+                User.id.in_(managed_user_ids), 
+                User.is_deleted == False,
+                User.role.ilike('%AGENT%')
+            ).count() if managed_user_ids else 0
+            
+            active_agents = db.query(User).filter(
+                User.id.in_(managed_user_ids), 
+                User.is_deleted == False, 
+                User.is_active == True,
+                User.role.ilike('%AGENT%')
+            ).count() if managed_user_ids else 0
 
         
         # Reports = from anyone in my scope (including me)
@@ -175,6 +193,7 @@ def get_dashboard_stats(
     total_farmers = 0
     affiliated_farmers = 0
     total_expected_reports = 0
+    total_camp_users = 0
 
     if is_admin or is_executive:
         total_farmers = db.query(func.sum(Province.total_customers)).scalar() or 0
@@ -182,26 +201,43 @@ def get_dashboard_stats(
             total_farmers = db.query(Customer).count() # Fallback to registered
         affiliated_farmers = db.query(Customer).count()
         total_expected_reports = total_agents
+        total_camp_users = db.query(User).filter(User.is_deleted == False, User.role.ilike('%CAMP%')).count()
     elif cur_role == "AGENT":
         camp = db.query(Camp).filter(Camp.id == current_user.camp_id).first()
         total_farmers = camp.total_customers if camp else 0
         affiliated_farmers = db.query(Customer).filter(Customer.camp_id == current_user.camp_id).count()
         total_expected_reports = 1 # Each agent is expected to submit 1 report
+        total_camp_users = db.query(User).filter(User.is_deleted == False, User.camp_id == current_user.camp_id, User.role.ilike('%CAMP%')).count()
     elif cur_role == "CAMP" and current_user.camp_id:
         camp = db.query(Camp).filter(Camp.id == current_user.camp_id).first()
         total_farmers = camp.total_customers if camp else 0
         affiliated_farmers = db.query(Customer).filter(Customer.camp_id == current_user.camp_id).count()
         total_expected_reports = total_agents
+        total_camp_users = db.query(User).filter(User.is_deleted == False, User.camp_id == current_user.camp_id, User.role.ilike('%CAMP%')).count()
     elif current_user.region_id:
         region = db.query(Region).filter(Region.id == current_user.region_id).first()
         total_farmers = region.total_customers if region else 0
         affiliated_farmers = db.query(Customer).filter(Customer.region_id == current_user.region_id).count()
         total_expected_reports = total_agents
+        total_camp_users = db.query(User).filter(User.is_deleted == False, User.region_id == current_user.region_id, User.role.ilike('%CAMP%')).count()
+    elif current_user.district_id:
+        dist = db.query(District).filter(District.id == current_user.district_id).first()
+        total_farmers = dist.total_customers if dist else 0
+        affiliated_farmers = db.query(Customer).filter(Customer.district_id == current_user.district_id).count()
+        total_expected_reports = total_agents
+        total_camp_users = db.query(User).filter(User.is_deleted == False, User.district_id == current_user.district_id, User.role.ilike('%CAMP%')).count()
+    elif current_user.province_id:
+        province = db.query(Province).filter(Province.id == current_user.province_id).first()
+        total_farmers = province.total_customers if province else 0
+        affiliated_farmers = db.query(Customer).filter(Customer.province_id == current_user.province_id).count()
+        total_expected_reports = total_agents
+        total_camp_users = db.query(User).filter(User.is_deleted == False, User.province_id == current_user.province_id, User.role.ilike('%CAMP%')).count()
     else:
         # Fallback for other roles/geographies
         total_farmers = 0
         affiliated_farmers = 0
         total_expected_reports = 0
+        total_camp_users = 0
 
     return {
         "total_agents": total_agents,
@@ -214,7 +250,10 @@ def get_dashboard_stats(
         "rejected_reports": rejected_reports,
         "report_trend": trend,
         "total_farmers": total_farmers,
+        "total_customers": total_farmers,
         "affiliated_farmers": affiliated_farmers,
+        "total_camp_users": total_camp_users,
+        "reports_submitted": total_reports,
         "total_expected_reports": total_expected_reports
     }
 
@@ -237,71 +276,124 @@ def _get_station_location(db: Session) -> Optional[tuple]:
 @router.get("/gis-tracking")
 def get_gis_tracking(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=200),
-    provinceId: Optional[int] = None,
-    districtId: Optional[int] = None,
-    regionId: Optional[int] = None,
-    campId: Optional[int] = None,
+    province_id: Optional[int] = None,
+    district_id: Optional[int] = None,
+    region_id: Optional[int] = None,
+    camp_id: Optional[int] = None,
+    q: Optional[str] = None,
+    ne_lat: Optional[float] = None,
+    ne_lng: Optional[float] = None,
+    sw_lat: Optional[float] = None,
+    sw_lng: Optional[float] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    current_user: User = Depends(get_current_user)
 ):
     """
-    Get live coordinates of agents with pagination and location filters.
+    Enterprise-grade GIS tracking with server-side search and viewport-based filtering.
     """
-    skip = (page - 1) * limit
-    # Hierarchy and Location filtering logic
+    from sqlalchemy import or_, cast, String, case, func
+    
     cur_role = str(current_user.role).upper()
-    is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "SUPERADMIN"]
+    is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE"]
     
-    # Optimization: Only fetch required columns for GIS tracking
-    query = db.query(User).filter(User.is_deleted == False)
+    skip = (page - 1) * page_size
+    limit = page_size
+
+    # Get global station location for distance fallback
+    station = _get_station_location(db)
+    s_lat = station[0] if station else 0
+    s_lng = station[1] if station else 0
+
+    # Hierarchical Station Reference for distance calculation in SQL
+    target_lat = func.coalesce(Camp.lat, Region.lat, District.lat, Province.lat, s_lat)
+    target_lng = func.coalesce(Camp.lng, Region.lng, District.lng, Province.lng, s_lng)
     
-    # If not admin, apply strict hierarchy
+    # Haversine distance expression (KM)
+    rad_lat1 = func.radians(User.last_lat)
+    rad_lat2 = func.radians(target_lat)
+    rad_lng_diff = func.radians(target_lng - User.last_lng)
+    cos_val = func.cos(rad_lat1) * func.cos(rad_lat2) * func.cos(rad_lng_diff) + func.sin(rad_lat1) * func.sin(rad_lat2)
+    safe_cos = case((cos_val > 1, 1), (cos_val < -1, -1), else_=cos_val)
+    distance_expr = 6371 * func.acos(safe_cos)
+
+    # Base query
+    query = db.query(User).filter(User.is_deleted == False, User.role == 'AGENT')
+    
+    # Joins for distance calculation
+    query = query.outerjoin(Camp, User.camp_id == Camp.id)\
+                 .outerjoin(Region, User.region_id == Region.id)\
+                 .outerjoin(District, User.district_id == District.id)\
+                 .outerjoin(Province, User.province_id == Province.id)
+    
+    # Apply administrative scope for non-admins
     if not is_admin:
-        r = cur_role
-        if r == UserRole.CAMP.value and current_user.camp_id is not None:
+        if cur_role == "CAMP" and current_user.camp_id:
             query = query.filter(User.camp_id == current_user.camp_id)
-        elif r == UserRole.REGION.value and current_user.region_id is not None:
+        elif cur_role == "REGION" and current_user.region_id:
             query = query.filter(User.region_id == current_user.region_id)
-        elif r == UserRole.DISTRICT.value and current_user.district_id is not None:
+        elif cur_role == "DISTRICT" and current_user.district_id:
             query = query.filter(User.district_id == current_user.district_id)
-        elif r == UserRole.PROVINCIAL.value and current_user.province_id is not None:
+        elif cur_role == "PROVINCIAL" and current_user.province_id:
             query = query.filter(User.province_id == current_user.province_id)
         else:
-            query = query.filter((User.id == current_user.id) | (User.parent_id == current_user.id))
-            
-    # Admin or filtered results
-    try:
-        if provinceId:
-            query = query.filter(User.province_id == int(provinceId))
-        if districtId:
-            query = query.filter(User.district_id == int(districtId))
-        if regionId:
-            query = query.filter(User.region_id == int(regionId))
-        if campId:
-            query = query.filter(User.camp_id == int(campId))
-    except (ValueError, TypeError):
-        pass
+            query = query.filter(User.id == current_user.id)
 
+    # Apply manual filters
+    if province_id: query = query.filter(User.province_id == province_id)
+    if district_id: query = query.filter(User.district_id == district_id)
+    if region_id: query = query.filter(User.region_id == region_id)
+    if camp_id: query = query.filter(User.camp_id == camp_id)
+    if status and status != 'all':
+        if status.lower() == 'online':
+            query = query.filter(User.is_active == True)
+        elif status.lower() == 'offline':
+            query = query.filter(User.is_active == False)
+        else:
+            query = query.filter(User.account_status == status)
+
+    # Server-side Search (P0)
+    if q:
+        query = query.filter(or_(
+            User.full_name.ilike(f"%{q}%"),
+            cast(User.id, String).ilike(f"%{q}%")
+        ))
+
+    # Viewport-based Filtering (P1)
+    if ne_lat and sw_lat and ne_lng and sw_lng:
+        query = query.filter(
+            User.last_lat <= ne_lat,
+            User.last_lat >= sw_lat,
+            User.last_lng <= ne_lng,
+            User.last_lng >= sw_lng
+        )
+
+    # Fetch with lightweight projection
     total = query.count()
-    agents = query.offset(skip).limit(limit).all()
-    results = [
-        {
-            "id": a.id,
-            "name": a.full_name,
-            "role": a.role,
-            "agent_lat": a.last_lat,
-            "agent_lng": a.last_lng,
-            "last_seen": a.last_seen.isoformat() if a.last_seen else None,
-            "status": a.account_status or "offline"
-        }
-        for a in agents
-    ]
+    query = query.with_entities(
+        User.id, User.full_name, User.role, User.last_lat, User.last_lng, User.last_seen, User.account_status, User.is_active,
+        distance_expr.label("distance_km")
+    )
+    
+    agents = query.order_by(User.last_seen.desc().nullslast()).offset(skip).limit(limit).all()
+    
     return {
-        "items": results,
+        "items": [
+            {
+                "id": a.id,
+                "name": a.full_name,
+                "role": a.role,
+                "agent_lat": a.last_lat,
+                "agent_lng": a.last_lng,
+                "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+                "status": "online" if a.is_active else "offline",
+                "distance_km": round(float(a.distance_km), 2) if a.distance_km is not None else None
+            } for a in agents
+        ],
         "total": total,
         "page": page,
-        "limit": limit
+        "page_size": limit
     }
 
 
@@ -318,7 +410,7 @@ def get_agents_with_distance(
     from app.utils.geo import haversine_km
 
     station = _get_station_location(db)
-    query = db.query(User).filter(User.is_deleted == False)
+    query = db.query(User).filter(User.is_deleted == False, User.role == 'AGENT')
     
     # Geographic filtering
     r = str(current_user.role).upper()
@@ -326,28 +418,58 @@ def get_agents_with_distance(
         query = query.filter(User.camp_id == current_user.camp_id)
     elif r == UserRole.REGION.value and current_user.region_id is not None:
         query = query.filter(User.region_id == current_user.region_id)
-        # STRICT: Regional users only see Agents and Camp users
-        if not current_user.is_superuser:
-            query = query.filter(User.role.in_([UserRole.AGENT, UserRole.CAMP, "AGENT", "Agent", "CAMP", "Camp"]))
+        # Removed exception for CAMP users to align with Agent-only monitoring requirement
+        pass
     elif r == UserRole.DISTRICT.value and current_user.district_id is not None:
         query = query.filter(User.district_id == current_user.district_id)
     elif r == UserRole.PROVINCIAL.value and current_user.province_id is not None:
         query = query.filter(User.province_id == current_user.province_id)
         
-    agents = query.all()
+    # Efficiently load relationships to avoid N+1 queries
+    agents = query.options(
+        joinedload(User.camp),
+        joinedload(User.region),
+        joinedload(User.district),
+        joinedload(User.province)
+    ).all()
+    
     results = []
     for a in agents:
-        lat, lng = a.last_lat, a.last_lng
+        agent_lat, agent_lng = a.last_lat, a.last_lng
+        
+        # HIERARCHICAL STATION SELECTION:
+        # 1. Camp Location
+        # 2. Region Location
+        # 3. District Location
+        # 4. Province Location
+        # 5. Global Station Configuration
+        
+        target_station = None
+        
+        if a.camp and a.camp.lat is not None and a.camp.lng is not None:
+            target_station = (a.camp.lat, a.camp.lng)
+        elif a.region and a.region.lat is not None and a.region.lng is not None:
+            target_station = (a.region.lat, a.region.lng)
+        elif a.district and a.district.lat is not None and a.district.lng is not None:
+            target_station = (a.district.lat, a.district.lng)
+        elif a.province and a.province.lat is not None and a.province.lng is not None:
+            target_station = (a.province.lat, a.province.lng)
+        else:
+            target_station = station # Fallback to global setting
+            
         distance_km = None
-        if station and lat is not None and lng is not None:
-            distance_km = haversine_km(station[0], station[1], lat, lng)
+        if target_station and agent_lat is not None and agent_lng is not None:
+            distance_km = haversine_km(target_station[0], target_station[1], agent_lat, agent_lng)
+            # Round to 2 decimal places for cleaner UI
+            distance_km = round(distance_km, 2)
+            
         results.append({
             "id": a.id,
             "name": a.full_name,
             "role": a.role,
             "profession": a.profession,
-            "lat": lat,
-            "lng": lng,
+            "lat": agent_lat,
+            "lng": agent_lng,
             "last_seen": a.last_seen.isoformat() if a.last_seen else None,
             "region_id": a.region_id,
             "distance_km": distance_km,

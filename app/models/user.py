@@ -36,7 +36,7 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255))
-    role = Column(String(50), default="AGENT", nullable=False)
+    role = Column(String(50), default="AGENT", nullable=False, index=True)
     
     # Dynamic Role
     role_id = Column(Integer, ForeignKey("system_roles.id"), nullable=True)
@@ -67,16 +67,16 @@ class User(Base):
     avatar_url = Column(String(500), nullable=True)
     
     # Last Known Location for GIS Tracking
-    last_lat = Column(Float, nullable=True)
-    last_lng = Column(Float, nullable=True)
-    last_seen = Column(DateTime(timezone=True), nullable=True)
+    last_lat = Column(Float, nullable=True, index=True)
+    last_lng = Column(Float, nullable=True, index=True)
+    last_seen = Column(DateTime(timezone=True), nullable=True, index=True)
     location = Column(String(255), nullable=True) # Assigned area or address
 
     # Location hierarchy (for Agent, Camp, Region, District, Provincial users)
-    camp_id = Column(Integer, ForeignKey("camps.id"), nullable=True)
-    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
-    province_id = Column(Integer, ForeignKey("provinces.id"), nullable=True)
-    district_id = Column(Integer, ForeignKey("districts.id"), nullable=True)
+    camp_id = Column(Integer, ForeignKey("camps.id"), nullable=True, index=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True, index=True)
+    province_id = Column(Integer, ForeignKey("provinces.id"), nullable=True, index=True)
+    district_id = Column(Integer, ForeignKey("districts.id"), nullable=True, index=True)
 
     # Agent profile fields (when role = AGENT)
     age = Column(Integer, nullable=True)
@@ -225,6 +225,8 @@ class Province(Base):
     name = Column(String(255), nullable=False)
     total_customers = Column(Integer, default=0)
     main_crop_family_id = Column(Integer, ForeignKey("crop_families.id"), nullable=True)
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
     
     main_crop_family = relationship("CropFamily")
 
@@ -236,6 +238,8 @@ class District(Base):
     total_customers = Column(Integer, default=0)
     district_type = Column(String(100), nullable=True)
     main_crop_family_id = Column(Integer, ForeignKey("crop_families.id"), nullable=True)
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
     
     province = relationship("Province")
     main_crop_family = relationship("CropFamily")
@@ -250,6 +254,8 @@ class Region(Base):
     region_type = Column(String(100), nullable=True)
     main_crop_family_id = Column(Integer, ForeignKey("crop_families.id"), nullable=True)
     is_approved = Column(Boolean, default=False)
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
     
     district = relationship("District")
     province = relationship("Province")
@@ -276,6 +282,8 @@ class Camp(Base):
     name = Column(String(255), nullable=False)
     camp_type = Column(String(100), nullable=True)
     total_customers = Column(Integer, default=0)
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
     
     region = relationship("Region")
     province = relationship("Province")

@@ -13,7 +13,10 @@ class DashboardStats(BaseModel):
     rejected_reports: int
     report_trend: List[dict]
     total_farmers: Optional[int] = 0
+    total_customers: Optional[int] = 0
     affiliated_farmers: Optional[int] = 0
+    total_camp_users: Optional[int] = 0
+    reports_submitted: Optional[int] = 0
     total_expected_reports: Optional[int] = 0
 
 class AgentLocation(BaseModel):
