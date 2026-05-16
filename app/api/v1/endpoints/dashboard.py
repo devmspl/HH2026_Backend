@@ -296,7 +296,8 @@ def get_gis_tracking(
     from sqlalchemy import or_, cast, String, case, func
     
     cur_role = str(current_user.role).upper()
-    is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE"]
+    # Robust admin check: superuser OR matches common admin role strings
+    is_admin = current_user.is_superuser or any(r in cur_role for r in ["SUPER", "ADMIN", "EXECUTIVE", "NATIONAL"])
     
     skip = (page - 1) * page_size
     limit = page_size
