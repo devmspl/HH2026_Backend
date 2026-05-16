@@ -318,8 +318,8 @@ def get_gis_tracking(
     safe_cos = case((cos_val > 1, 1), (cos_val < -1, -1), else_=cos_val)
     distance_expr = 6371 * func.acos(safe_cos)
 
-    # Base query
-    query = db.query(User).filter(User.is_deleted == False, User.role == 'AGENT')
+    # Base query - Use ilike for case-insensitive role matching
+    query = db.query(User).filter(User.is_deleted == False, User.role.ilike('%AGENT%'))
     
     # Joins for distance calculation
     query = query.outerjoin(Camp, User.camp_id == Camp.id)\
@@ -410,7 +410,7 @@ def get_agents_with_distance(
     from app.utils.geo import haversine_km
 
     station = _get_station_location(db)
-    query = db.query(User).filter(User.is_deleted == False, User.role == 'AGENT')
+    query = db.query(User).filter(User.is_deleted == False, User.role.ilike('%AGENT%'))
     
     # Geographic filtering
     r = str(current_user.role).upper()
@@ -601,7 +601,7 @@ def get_district_summary(
 
     for region in regions:
         # Agents count
-        agent_count = db.query(User).filter(User.region_id == region.id, User.role == UserRole.AGENT).count()
+        agent_count = db.query(User).filter(User.region_id == region.id, User.role.ilike('%AGENT%')).count()
         agents_by_region.append({"id": region.id, "name": region.name, "count": agent_count})
 
         # Customers count
