@@ -287,12 +287,12 @@ def get_national_crop_report(
     """
     from app.models.user import Survey
 
-    # Fetch all reports that have survey_data: National + Regional surveys (so admin-created sample reports show in National tab too)
     query = (
         db.query(Report)
         .join(Survey, Report.survey_id == Survey.id)
         .filter(
-            (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey")
+            (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey"),
+            Report.status == "approved"
         )
     )
     query = apply_hierarchy_filter(query, current_user)
@@ -669,14 +669,15 @@ def get_dominant_crop_map(
     from app.models.user import Survey, Province, District, Region
     from collections import defaultdict
 
-    # Reports with location + survey_data (National + Regional surveys) for By Province / By Region map
     query = (
         db.query(Report)
         .join(Survey, Report.survey_id == Survey.id)
         .filter(
-            (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey")
+            (Survey.form_type == "National Crops Survey") | (Survey.form_type == "Regional Crops Survey"),
+            Report.status == "approved"
         )
     )
+    query = apply_hierarchy_filter(query, current_user)
     reports = query.all()
 
     province_family_yield: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -767,8 +768,12 @@ def get_top_family_by_province(
     query = (
         db.query(Report)
         .join(Survey, Report.survey_id == Survey.id)
-        .filter(Survey.form_type == "National Crops Survey")
+        .filter(
+            Survey.form_type == "National Crops Survey",
+            Report.status == "approved"
+        )
     )
+    query = apply_hierarchy_filter(query, current_user)
     reports = query.all()
     province_family_yield: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
@@ -1126,166 +1131,7 @@ def delete_report(
     
     return {"message": "Report deleted successfully"}
 
-@router.get("/crops/top-family-by-province", response_model=general_schema.TopFamilyRankResponse)
-def get_top_family_by_province(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Returns which crop family is top (by yield) in how many provinces.
-    Used for 'Regional Crop Graph by Family'.
-    """
-    from app.models.user import Province
-    prov_query = db.query(Province)
-    if not (current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL]):
-        if current_user.province_id:
-            prov_query = prov_query.filter(Province.id == current_user.province_id)
-        else:
-            # If they don't have a province but aren't admin, they see nothing
-            return {"rows": []}
-            
-    provinces = prov_query.all()
-    
-    family_stats = {}
-    
-    for province in provinces:
-        reports = db.query(Report).filter(
-            Report.province_id == province.id,
-            Report.status == "approved"
-        ).all()
-        
-        if not reports:
-            continue
-            
-        family_yields = {} 
-        for report in reports:
-            if not report.survey_data:
-                continue
-            try:
-                data = json.loads(report.survey_data)
-            except:
-                continue
-                
-            if "crops" not in data:
-                continue
-            
-            for crop_obj in data["crops"]:
-                f_name = crop_obj.get("family_name") or "Other"
-                f_yield = float(crop_obj.get("yield_tonnes") or 0)
-                family_yields[f_name] = family_yields.get(f_name, 0) + f_yield
-        
-        if not family_yields:
-            continue
-            
-        top_family = max(family_yields.items(), key=lambda x: x[1])[0]
-        
-        if top_family not in family_stats:
-            family_stats[top_family] = {"province_count": 0, "provinces": []}
-        
-        family_stats[top_family]["province_count"] += 1
-        family_stats[top_family]["provinces"].append(province.name)
-        
-    rows = []
-    for f_name, stats in family_stats.items():
-        rows.append({
-            "family_name": f_name,
-            "province_count": stats["province_count"],
-            "provinces": stats["provinces"]
-        })
-    
-    rows.sort(key=lambda x: x["province_count"], reverse=True)
-    return {"rows": rows}
 
-@router.get("/crops/dominant-map", response_model=general_schema.DominantCropMapResponse)
-def get_dominant_crop_map(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Returns dominant family for each province and region by yield.
-    Used for 'GIS Domination Map'.
-    """
-    from app.models.user import Province, Region
-    
-    # 1. By Province
-    prov_query = db.query(Province)
-    if not (current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL]):
-        if current_user.province_id:
-            prov_query = prov_query.filter(Province.id == current_user.province_id)
-        else:
-            prov_query = prov_query.filter(Province.id == -1) # Empty
-    provinces = prov_query.all()
-    by_province = []
-    for prov in provinces:
-        reports = db.query(Report).filter(
-            Report.province_id == prov.id,
-            Report.status == "approved"
-        ).all()
-        if not reports: continue
-        
-        family_yields = {}
-        for report in reports:
-            if not report.survey_data: continue
-            try:
-                data = json.loads(report.survey_data)
-                for crop in data.get("crops", []):
-                    f_name = crop.get("family_name") or "Other"
-                    f_yield = float(crop.get("yield_tonnes") or 0)
-                    family_yields[f_name] = family_yields.get(f_name, 0) + f_yield
-            except: continue
-        
-        if family_yields:
-            top_f = max(family_yields.items(), key=lambda x: x[1])
-            by_province.append({
-                "province_id": prov.id,
-                "province_name": prov.name,
-                "dominant_family_name": top_f[0],
-                "yield_tonnes": top_f[1]
-            })
-
-    # 2. By Region
-    reg_query = db.query(Region)
-    if not (current_user.is_superuser or current_user.role in [UserRole.SUPER_ADMIN, UserRole.ADMINISTRATOR, UserRole.EXECUTIVE, UserRole.NATIONAL]):
-        if current_user.region_id:
-            reg_query = reg_query.filter(Region.id == current_user.region_id)
-        elif current_user.district_id:
-            reg_query = reg_query.filter(Region.district_id == current_user.district_id)
-        elif current_user.province_id:
-            reg_query = reg_query.join(District).filter(District.province_id == current_user.province_id)
-        else:
-            reg_query = reg_query.filter(Region.id == -1)
-    regions = reg_query.all()
-    by_region = []
-    for reg in regions:
-        reports = db.query(Report).filter(
-            Report.region_id == reg.id,
-            Report.status == "approved"
-        ).all()
-        if not reports: continue
-        
-        family_yields = {}
-        for report in reports:
-            if not report.survey_data: continue
-            try:
-                data = json.loads(report.survey_data)
-                for crop in data.get("crops", []):
-                    f_name = crop.get("family_name") or "Other"
-                    f_yield = float(crop.get("yield_tonnes") or 0)
-                    family_yields[f_name] = family_yields.get(f_name, 0) + f_yield
-            except: continue
-            
-        if family_yields:
-            top_f = max(family_yields.items(), key=lambda x: x[1])
-            by_region.append({
-                "region_id": reg.id,
-                "region_name": reg.name,
-                "district_name": reg.district.name if reg.district else "-",
-                "province_name": reg.province.name if reg.province else "-",
-                "dominant_family_name": top_f[0],
-                "yield_tonnes": top_f[1]
-            })
-            
-    return {"by_province": by_province, "by_region": by_region}
 
 @router.get("/crop-domination/provinces")
 def get_crop_domination_provinces(
@@ -1317,10 +1163,20 @@ def get_crop_domination_provinces(
     default_color = "rgba(156, 163, 175, 0.4)"    # Transparent Gray for No Data
     
     result = []
+    query = db.query(Report).filter(Report.status == "approved")
+    query = apply_hierarchy_filter(query, current_user)
+    all_approved_reports = query.all()
+    
+    # Group reports by province
+    from collections import defaultdict
+    prov_reports = defaultdict(list)
+    for r in all_approved_reports:
+        if r.province_id:
+            prov_reports[r.province_id].append(r)
+
+    result = []
     for prov in provinces:
-        reports = db.query(Report).filter(
-            Report.province_id == prov.id
-        ).all()
+        reports = prov_reports.get(prov.id, [])
         if not reports: continue
         
         family_yields = {}
