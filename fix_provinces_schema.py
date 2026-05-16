@@ -17,9 +17,13 @@ def fix_columns():
             # Regions
             conn.execute(text("ALTER TABLE regions ADD COLUMN IF NOT EXISTS lat FLOAT;"))
             conn.execute(text("ALTER TABLE regions ADD COLUMN IF NOT EXISTS lng FLOAT;"))
+
+            # Camps
+            conn.execute(text("ALTER TABLE camps ADD COLUMN IF NOT EXISTS lat FLOAT;"))
+            conn.execute(text("ALTER TABLE camps ADD COLUMN IF NOT EXISTS lng FLOAT;"))
             
             conn.commit()
-            print("✅ Successfully added missing columns (lat, lng) to provinces, districts, and regions tables.")
+            print("✅ Successfully added missing columns (lat, lng) to provinces, districts, regions, and camps tables.")
         except Exception as e:
             print(f"❌ Error updating table: {e}")
 
