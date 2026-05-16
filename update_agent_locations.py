@@ -1,6 +1,6 @@
 import random
 from app.db.session import SessionLocal
-from app.models.user import User
+from app.models.user import User, Province, District, Region, Camp
 from datetime import datetime, timedelta
 
 def update_agents():
