@@ -30,43 +30,54 @@ def seed_comprehensive_data():
             db.add(regional_survey)
             db.flush()
 
-        crop_options = [
-            ("Maize", "Cereals"),
-            ("Wheat", "Cereals"),
-            ("Rice", "Cereals"),
-            ("Soybeans", "Legumes"),
-            ("Cassava", "Tubers"),
-            ("Sorghum", "Cereals"),
-            ("Millet", "Cereals"),
-            ("Groundnuts", "Legumes"),
-            ("Cabbage", "Vegetables"),
-            ("Oranges", "Fruits"),
-            ("Tomatoes", "Vegetables"),
-            ("Tobacco", "Other")
-        ]
+        # Clear existing dummy reports to avoid clutter
+        db.query(Report).filter(Report.description.like("%dummy data%")).delete(synchronize_session=False)
+        db.commit()
+        print("🧹 Cleared old dummy data.")
 
+        crop_families = {
+            "Cereals": ["Maize", "Wheat", "Rice", "Sorghum", "Millet"],
+            "Legumes": ["Soybeans", "Groundnuts", "Beans"],
+            "Tubers": ["Cassava", "Potatoes", "Sweet Potatoes"],
+            "Vegetables": ["Cabbage", "Tomatoes", "Onions"],
+            "Fruits": ["Oranges", "Bananas", "Mangoes"],
+            "Other": ["Tobacco", "Cotton", "Sunflower"]
+        }
+        
+        family_list = list(crop_families.keys())
         provinces = db.query(Province).all()
         
-        print(f"Generating data for {len(provinces)} provinces...")
+        print(f"Generating colorful data for {len(provinces)} provinces...")
 
         for p in provinces:
+            # Force a random dominant family for this province to ensure color variety
+            dominant_family = random.choice(family_list)
+            
             districts = db.query(District).filter(District.province_id == p.id).all()
             
-            # Generate 3-5 National Reports per province
-            for i in range(random.randint(3, 5)):
-                # Randomly pick 3-6 crops
-                selected_crops = random.sample(crop_options, random.randint(3, 6))
-                
-                total_f = random.randint(500, 2000)
-                participating = random.randint(int(total_f * 0.6), int(total_f * 0.95))
-                spoiled = random.randint(5, 50)
+            # Generate 4 National Reports per province
+            for i in range(4):
+                total_f = random.randint(1000, 3000)
+                participating = random.randint(int(total_f * 0.7), int(total_f * 0.9))
+                spoiled = random.randint(10, 100)
                 
                 crops_data = []
-                for crop_name, family in selected_crops:
+                # 1. Add the dominant family with high yield
+                dom_crop = random.choice(crop_families[dominant_family])
+                crops_data.append({
+                    "crop_name": dom_crop,
+                    "family_name": dominant_family,
+                    "yield_tonnes": round(random.uniform(2000.0, 5000.0), 1)
+                })
+                
+                # 2. Add 2-3 other families with lower yield
+                other_families = [f for f in family_list if f != dominant_family]
+                for other_fam in random.sample(other_families, 3):
+                    other_crop = random.choice(crop_families[other_fam])
                     crops_data.append({
-                        "crop_name": crop_name,
-                        "family_name": family,
-                        "yield_tonnes": round(random.uniform(100.0, 1000.0), 1)
+                        "crop_name": other_crop,
+                        "family_name": other_fam,
+                        "yield_tonnes": round(random.uniform(100.0, 800.0), 1)
                     })
                 
                 survey_data = {
@@ -79,8 +90,8 @@ def seed_comprehensive_data():
                 report = Report(
                     agent_id=agent.id,
                     survey_id=national_survey.id,
-                    title=f"National Survey - {p.name} #{i+1}",
-                    description=f"Comprehensive dummy data for {p.name}",
+                    title=f"National Survey - {p.name} (Dominant: {dominant_family})",
+                    description="Comprehensive colorful dummy data",
                     status=ReportStatus.APPROVED,
                     gps_lat=random.uniform(-18.0, -8.0),
                     gps_lng=random.uniform(22.0, 33.0),
