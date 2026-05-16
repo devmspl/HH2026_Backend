@@ -10,6 +10,8 @@ def seed_comprehensive_data():
         # Get an agent for the reports
         agent = db.query(User).filter(User.role == "AGENT").first()
         if not agent:
+            agent = db.query(User).filter(User.role == "agent").first()
+        if not agent:
             agent = db.query(User).first()
         
         if not agent:
@@ -55,14 +57,14 @@ def seed_comprehensive_data():
             
             districts = db.query(District).filter(District.province_id == p.id).all()
             
-            # Generate 4 National Reports per province
+            # 1. Generate 4 National Reports per province
             for i in range(4):
                 total_f = random.randint(1000, 3000)
                 participating = random.randint(int(total_f * 0.7), int(total_f * 0.9))
                 spoiled = random.randint(10, 100)
                 
                 crops_data = []
-                # 1. Add the dominant family with high yield
+                # Add the dominant family with high yield
                 dom_crop = random.choice(crop_families[dominant_family])
                 crops_data.append({
                     "crop_name": dom_crop,
@@ -70,7 +72,7 @@ def seed_comprehensive_data():
                     "yield_tonnes": round(random.uniform(2000.0, 5000.0), 1)
                 })
                 
-                # 2. Add 2-3 other families with lower yield
+                # Add 2-3 other families with lower yield
                 other_families = [f for f in family_list if f != dominant_family]
                 for other_fam in random.sample(other_families, 3):
                     other_crop = random.choice(crop_families[other_fam])
@@ -101,38 +103,36 @@ def seed_comprehensive_data():
                 )
                 db.add(report)
 
-            # Generate Regional Reports for each district/region
+            # 2. Generate Regional Reports for each district/region
             for d in districts:
                 regions = db.query(Region).filter(Region.district_id == d.id).all()
                 for r in regions:
                     # 1-2 Regional reports per region
                     for k in range(random.randint(1, 2)):
-                        selected_crops = random.sample(crop_options, random.randint(2, 4))
+                        # Pick a random family for regional tally
+                        reg_family = random.choice(family_list)
+                        reg_crop = random.choice(crop_families[reg_family])
                         
                         total_f = random.randint(50, 300)
                         participating = random.randint(int(total_f * 0.7), int(total_f * 0.98))
                         spoiled = random.randint(0, 10)
                         
-                        crops_data = []
-                        for crop_name, family in selected_crops:
-                            crops_data.append({
-                                "crop_name": crop_name,
-                                "family_name": family,
-                                "yield_tonnes": round(random.uniform(10.0, 150.0), 1)
-                            })
-                        
                         survey_data = {
                             "total_farmers": total_f,
                             "participating_farmers": participating,
                             "spoiled_responses": spoiled,
-                            "crops": crops_data
+                            "crops": [{
+                                "crop_name": reg_crop,
+                                "family_name": reg_family,
+                                "yield_tonnes": round(random.uniform(10.0, 150.0), 1)
+                            }]
                         }
                         
                         report = Report(
                             agent_id=agent.id,
                             survey_id=regional_survey.id,
                             title=f"Regional Survey - {r.name}",
-                            description=f"Tally data for {r.name}, {d.name}",
+                            description="Tally colorful dummy data",
                             status=ReportStatus.APPROVED,
                             gps_lat=random.uniform(-18.0, -8.0),
                             gps_lng=random.uniform(22.0, 33.0),
