@@ -46,12 +46,14 @@ def read_agents(
     region_id: Optional[int] = Query(None, alias="regionId"),
     district_id: Optional[int] = Query(None, alias="districtId"),
     camp_id: Optional[int] = Query(None, alias="campId"),
+    sort_by: Optional[str] = None,
+    sort_order: str = "asc",
 ) -> Any:
     """
     Retrieve agents based on role hierarchy and optional role filter with pagination.
     """
     print(f"[DEBUG AGENTS] read_agents called by {current_user.id} ({current_user.role})")
-    print(f"[DEBUG AGENTS] Params - role: {role}, status: {status}, search: {search}, region: {region_id}, district: {district_id}, camp: {camp_id}")
+    print(f"[DEBUG AGENTS] Params - role: {role}, status: {status}, search: {search}, region: {region_id}, district: {district_id}, camp: {camp_id}, sort_by: {sort_by}, sort_order: {sort_order}")
     
     skip = (page - 1) * limit
     current_level = get_role_level(current_user.role)
@@ -193,6 +195,32 @@ def read_agents(
             
         query = query.filter(User.id.in_(sub_ids))
     
+    # Apply backend sorting
+    if sort_by:
+        is_desc = sort_order.lower() == "desc"
+        field_map = {
+            "AgentID": User.id,
+            "AgentName": User.full_name,
+            "Email": User.email,
+            "CampID": User.camp_id,
+            "RegionID": User.region_id,
+            "ProvinceID": User.province_id,
+            "DistrictID": User.district_id,
+            "Age": User.age,
+            "Sex": User.sex,
+            "Profession": User.profession
+        }
+        target_field = field_map.get(sort_by)
+        if target_field is not None:
+            if is_desc:
+                query = query.order_by(target_field.desc().nullslast() if hasattr(target_field, 'nullslast') else target_field.desc())
+            else:
+                query = query.order_by(target_field.asc().nullsfirst() if hasattr(target_field, 'nullsfirst') else target_field.asc())
+        else:
+            query = query.order_by(User.id.asc())
+    else:
+        query = query.order_by(User.id.asc())
+
     total = query.count()
     print(f"[DEBUG AGENTS] Total records matching filters: {total}")
     users = query.offset(skip).limit(limit).all()

@@ -310,16 +310,37 @@ def delete_national_crop(
 def list_provinces(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query(None),
 ) -> Any:
     """List all provinces (id, name, total_customers, main_crop_family_name) for dropdowns and management."""
     cur_role = str(current_user.role).upper()
     is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL", "SUPERADMIN"]
-    query = db.query(Province).options(joinedload(Province.main_crop_family)).order_by(Province.name)
+    query = db.query(Province).options(joinedload(Province.main_crop_family))
     
     if not is_admin:
         if current_user.province_id:
             query = query.filter(Province.id == current_user.province_id)
             
+    # Sorting
+    if sort_by == "ProvinceID":
+        query = query.order_by(Province.id.desc() if sort_order == "desc" else Province.id.asc())
+    elif sort_by == "Province":
+        query = query.order_by(Province.name.desc() if sort_order == "desc" else Province.name.asc())
+    elif sort_by == "maincropFamily":
+        from app.models.user import CropFamily
+        query = query.outerjoin(Province.main_crop_family)
+        query = query.order_by(CropFamily.family_name.desc() if sort_order == "desc" else CropFamily.family_name.asc())
+    elif sort_by == "Customers":
+        customer_count_subquery = db.query(
+            Customer.province_id,
+            func.count(Customer.id).label("c_count")
+        ).group_by(Customer.province_id).subquery()
+        query = query.outerjoin(customer_count_subquery, Province.id == customer_count_subquery.c.province_id)
+        query = query.order_by(customer_count_subquery.c.c_count.desc() if sort_order == "desc" else customer_count_subquery.c.c_count.asc())
+    else:
+        query = query.order_by(Province.name)
+
     rows = query.all()
     result = []
     for p in rows:
@@ -339,11 +360,13 @@ def list_districts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     province_id: Optional[int] = None,
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query(None),
 ) -> Any:
     """List districts; optional filter by province_id. Returns customer counts and main crop family."""
     cur_role = str(current_user.role).upper()
     is_admin = current_user.is_superuser or cur_role in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL", "SUPERADMIN"]
-    query = db.query(District).options(joinedload(District.main_crop_family)).order_by(District.name)
+    query = db.query(District).options(joinedload(District.main_crop_family))
     if province_id is not None:
         query = query.filter(District.province_id == province_id)
     
@@ -352,6 +375,30 @@ def list_districts(
             query = query.filter(District.id == current_user.district_id)
         elif current_user.province_id:
             query = query.filter(District.province_id == current_user.province_id)
+
+    # Sorting
+    if sort_by == "DistrictID":
+        query = query.order_by(District.id.desc() if sort_order == "desc" else District.id.asc())
+    elif sort_by == "District":
+        query = query.order_by(District.name.desc() if sort_order == "desc" else District.name.asc())
+    elif sort_by == "ProvinceID":
+        query = query.order_by(District.province_id.desc() if sort_order == "desc" else District.province_id.asc())
+    elif sort_by == "Type":
+        query = query.order_by(District.district_type.desc() if sort_order == "desc" else District.district_type.asc())
+    elif sort_by == "maincropFamily":
+        from app.models.user import CropFamily
+        query = query.outerjoin(District.main_crop_family)
+        query = query.order_by(CropFamily.family_name.desc() if sort_order == "desc" else CropFamily.family_name.asc())
+    elif sort_by == "Customers":
+        customer_count_subquery = db.query(
+            Customer.district_id,
+            func.count(Customer.id).label("c_count")
+        ).group_by(Customer.district_id).subquery()
+        query = query.outerjoin(customer_count_subquery, District.id == customer_count_subquery.c.district_id)
+        query = query.order_by(customer_count_subquery.c.c_count.desc() if sort_order == "desc" else customer_count_subquery.c.c_count.asc())
+    else:
+        query = query.order_by(District.name)
+
     rows = query.all()
     
     # Optimize customer count query
@@ -379,10 +426,12 @@ def list_regions(
     current_user: User = Depends(get_current_user),
     province_id: Optional[int] = None,
     district_id: Optional[int] = None,
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query(None),
 ) -> Any:
     """List regions; optional filter by province_id and/or district_id."""
     cur_role = str(current_user.role).upper()
-    query = db.query(Region).options(joinedload(Region.main_crop_family)).order_by(Region.name)
+    query = db.query(Region).options(joinedload(Region.main_crop_family))
     if province_id is not None:
         query = query.filter(Region.province_id == province_id)
     if district_id is not None:
@@ -393,6 +442,32 @@ def list_regions(
             query = query.filter(Region.id == current_user.region_id)
         elif current_user.district_id:
             query = query.filter(Region.district_id == current_user.district_id)
+
+    # Sorting
+    if sort_by == "regionID":
+        query = query.order_by(Region.id.desc() if sort_order == "desc" else Region.id.asc())
+    elif sort_by == "Region":
+        query = query.order_by(Region.name.desc() if sort_order == "desc" else Region.name.asc())
+    elif sort_by == "DistrictID":
+        query = query.order_by(Region.district_id.desc() if sort_order == "desc" else Region.district_id.asc())
+    elif sort_by == "ProvinceID":
+        query = query.order_by(Region.province_id.desc() if sort_order == "desc" else Region.province_id.asc())
+    elif sort_by == "Type":
+        query = query.order_by(Region.region_type.desc() if sort_order == "desc" else Region.region_type.asc())
+    elif sort_by == "maincropFamily":
+        from app.models.user import CropFamily
+        query = query.outerjoin(Region.main_crop_family)
+        query = query.order_by(CropFamily.family_name.desc() if sort_order == "desc" else CropFamily.family_name.asc())
+    elif sort_by == "Customers":
+        customer_count_subquery = db.query(
+            Customer.region_id,
+            func.count(Customer.id).label("c_count")
+        ).group_by(Customer.region_id).subquery()
+        query = query.outerjoin(customer_count_subquery, Region.id == customer_count_subquery.c.region_id)
+        query = query.order_by(customer_count_subquery.c.c_count.desc() if sort_order == "desc" else customer_count_subquery.c.c_count.asc())
+    else:
+        query = query.order_by(Region.name)
+
     rows = query.all()
     
     # Optimize customer count query
@@ -420,21 +495,53 @@ def list_camps(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     region_id: Optional[int] = None,
+    district_id: Optional[int] = None,
+    province_id: Optional[int] = None,
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=10000),
 ) -> Any:
-    """List camps; optional filter by region_id with pagination."""
+    """List camps; optional filter by region_id, district_id, province_id with pagination and sorting."""
     skip = (page - 1) * limit
     cur_role = str(current_user.role).upper()
-    query = db.query(Camp).order_by(Camp.name)
+    query = db.query(Camp)
     if region_id is not None:
         query = query.filter(Camp.region_id == region_id)
+    if district_id is not None:
+        query = query.filter(Camp.district_id == district_id)
+    if province_id is not None:
+        query = query.filter(Camp.province_id == province_id)
 
     if cur_role not in ["SUPER_ADMIN", "ADMINISTRATOR", "EXECUTIVE", "NATIONAL"]:
         if current_user.camp_id:
             query = query.filter(Camp.id == current_user.camp_id)
         elif current_user.region_id:
             query = query.filter(Camp.region_id == current_user.region_id)
+
+    # Sorting
+    if sort_by == "CampID":
+        query = query.order_by(Camp.id.desc() if sort_order == "desc" else Camp.id.asc())
+    elif sort_by == "CampName":
+        query = query.order_by(Camp.name.desc() if sort_order == "desc" else Camp.name.asc())
+    elif sort_by == "RegionID":
+        query = query.order_by(Camp.region_id.desc() if sort_order == "desc" else Camp.region_id.asc())
+    elif sort_by == "ProvinceID":
+        query = query.order_by(Camp.province_id.desc() if sort_order == "desc" else Camp.province_id.asc())
+    elif sort_by == "DistrictID":
+        query = query.order_by(Camp.district_id.desc() if sort_order == "desc" else Camp.district_id.asc())
+    elif sort_by == "CampLType":
+        query = query.order_by(Camp.camp_type.desc() if sort_order == "desc" else Camp.camp_type.asc())
+    elif sort_by == "Customers":
+        customer_count_subquery = db.query(
+            Customer.camp_id,
+            func.count(Customer.id).label("c_count")
+        ).group_by(Customer.camp_id).subquery()
+        query = query.outerjoin(customer_count_subquery, Camp.id == customer_count_subquery.c.camp_id)
+        query = query.order_by(customer_count_subquery.c.c_count.desc() if sort_order == "desc" else customer_count_subquery.c.c_count.asc())
+    else:
+        query = query.order_by(Camp.name)
+
     total = query.count()
     rows = query.offset(skip).limit(limit).all()
     # Optimize customer count query
@@ -466,24 +573,57 @@ def list_camps(
 def list_national_crops(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query(None),
+    family_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
 ) -> Any:
-    """List national crops (id, crop_name, family_name) for survey/report forms."""
-    rows = (
-        db.query(NationalCrop)
-        .options(joinedload(NationalCrop.family))
-        .order_by(NationalCrop.crop_name)
-        .all()
-    )
-    return [
+    """List national crops with sorting and filtering."""
+    query = db.query(NationalCrop).options(joinedload(NationalCrop.family))
+    
+    if family_id is not None:
+        query = query.filter(NationalCrop.family_id == family_id)
+    if status:
+        query = query.filter(func.lower(NationalCrop.status) == status.lower())
+        
+    rows = query.all()
+    
+    # Serialize
+    result = [
         {
             "id": r.id,
             "crop_name": r.crop_name,
+            "crop_id": r.crop_id,
             "family_id": r.family_id,
             "family_name": r.family.family_name if r.family else None,
             "picture": r.picture,
+            "status": r.status or "active",
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         }
         for r in rows
     ]
+    
+    # Sort in memory
+    if sort_by:
+        reverse = (sort_order == "desc")
+        if sort_by == "CropID":
+            result.sort(key=lambda x: x["id"], reverse=reverse)
+        elif sort_by == "CropName":
+            result.sort(key=lambda x: (x["crop_name"] or "").lower(), reverse=reverse)
+        elif sort_by == "Family":
+            result.sort(key=lambda x: (x["family_name"] or "").lower(), reverse=reverse)
+        elif sort_by == "Status":
+            result.sort(key=lambda x: (x["status"] or "").lower(), reverse=reverse)
+        elif sort_by == "CreatedAt":
+            result.sort(key=lambda x: x["created_at"] or "", reverse=reverse)
+        elif sort_by == "UpdatedAt":
+            result.sort(key=lambda x: x["updated_at"] or "", reverse=reverse)
+    else:
+        # Default order
+        result.sort(key=lambda x: (x["crop_name"] or "").lower())
+        
+    return result
 
 
 @router.get("/regional-crops", response_model=List[Any])
@@ -491,14 +631,13 @@ def list_regional_crops(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     region_id: Optional[int] = Query(None),
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query(None),
+    family_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
 ) -> Any:
     """
     List regional crops, optionally for a specific region.
-
-    IMPORTANT - Agent restriction (spec: "Agent sees only crops for their region"):
-    - When current_user is AGENT: region_id is IGNORED; only crops from agent's assigned
-      region (current_user.region_id) are returned. If agent has no region_id, returns 403.
-    - When current_user is not AGENT: region_id query param is used as filter (optional).
     """
     effective_region_id = region_id
 
@@ -510,11 +649,18 @@ def list_regional_crops(
             )
         effective_region_id = current_user.region_id
 
-    query = db.query(RegionalCrop).order_by(RegionalCrop.crop_name)
+    query = db.query(RegionalCrop).options(joinedload(RegionalCrop.family))
     if effective_region_id is not None:
         query = query.filter(RegionalCrop.region_id == effective_region_id)
+    if family_id is not None:
+        query = query.filter(RegionalCrop.family_id == family_id)
+    if status:
+        query = query.filter(func.lower(RegionalCrop.status) == status.lower())
+        
     rows = query.all()
-    return [
+    
+    # Serialize
+    result = [
         {
             "id": r.id,
             "crop_name": r.crop_name,
@@ -523,9 +669,33 @@ def list_regional_crops(
             "family_name": r.family.family_name if r.family else None,
             "picture": r.picture,
             "rcrop_id": r.rcrop_id,
+            "status": r.status or "active",
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         }
         for r in rows
     ]
+    
+    # Sort in memory
+    if sort_by:
+        reverse = (sort_order == "desc")
+        if sort_by == "CropID":
+            result.sort(key=lambda x: x["id"], reverse=reverse)
+        elif sort_by == "CropName":
+            result.sort(key=lambda x: (x["crop_name"] or "").lower(), reverse=reverse)
+        elif sort_by == "Family":
+            result.sort(key=lambda x: (x["family_name"] or "").lower(), reverse=reverse)
+        elif sort_by == "Status":
+            result.sort(key=lambda x: (x["status"] or "").lower(), reverse=reverse)
+        elif sort_by == "CreatedAt":
+            result.sort(key=lambda x: x["created_at"] or "", reverse=reverse)
+        elif sort_by == "UpdatedAt":
+            result.sort(key=lambda x: x["updated_at"] or "", reverse=reverse)
+    else:
+        # Default order
+        result.sort(key=lambda x: (x["crop_name"] or "").lower())
+        
+    return result
 
 @router.post("/regional-crops", response_model=Any)
 def create_regional_crop(

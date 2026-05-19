@@ -111,7 +111,9 @@ class SurveyUpdate(BaseModel):
 class SurveyOut(SurveyBase):
     id: int
     created_by: int
+    created_by_name: Optional[str] = None
     created_at: datetime
+    updated_at: datetime
     target_user_ids: Optional[List[int]] = None # We can map this manually or use a property
 
 class PaginatedUsers(BaseModel):

@@ -191,7 +191,9 @@ class Survey(Base):
     status = Column(String(50), nullable=False, default=SurveyStatus.DRAFT.value)
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
     
+    creator = relationship("User", foreign_keys=[created_by])
     # Target Users (for Selected Agents)
     target_users = relationship("User", secondary="survey_targets")
 
@@ -216,6 +218,9 @@ class NationalCrop(Base):
     crop_id = Column(String(100), nullable=True)
     family_id = Column(Integer, ForeignKey("crop_families.id"))
     picture = Column(Text, nullable=True)
+    status = Column(String(50), default="active", server_default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     family = relationship("CropFamily")
 
@@ -269,6 +274,9 @@ class RegionalCrop(Base):
     crop_name = Column(String(255), nullable=False)
     family_id = Column(Integer, ForeignKey("crop_families.id"))
     picture = Column(Text, nullable=True)
+    status = Column(String(50), default="active", server_default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     region = relationship("Region")
     family = relationship("CropFamily")

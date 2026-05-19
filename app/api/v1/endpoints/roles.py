@@ -10,8 +10,28 @@ from app.core.audit import log_action
 router = APIRouter()
 
 @router.get("/", response_model=List[Role])
-def get_roles(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(SystemRole).all()
+def get_roles(
+    sort_by: str = None,
+    sort_order: str = "asc",
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    roles = db.query(SystemRole).all()
+    if sort_by:
+        is_desc = sort_order.lower() == "desc"
+        if sort_by == "RoleName":
+            roles.sort(key=lambda r: (r.name or "").lower(), reverse=is_desc)
+        elif sort_by == "PermissionsCount":
+            import json
+            def get_perms_count(r):
+                try:
+                    return len(json.loads(r.permissions or "[]"))
+                except:
+                    return 0
+            roles.sort(key=get_perms_count, reverse=is_desc)
+        elif sort_by == "CreatedAt":
+            roles.sort(key=lambda r: r.created_at.isoformat() if r.created_at else "", reverse=is_desc)
+    return roles
 
 @router.post("/", response_model=Role)
 def create_role(role_in: RoleCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

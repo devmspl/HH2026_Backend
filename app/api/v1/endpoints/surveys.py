@@ -28,6 +28,8 @@ def _notify_assigned_agents(db: Session, survey: Survey, agent_ids: List[int], t
 
 @router.get("/", response_model=List[SurveyOut])
 def get_surveys(
+    sort_by: str = None,
+    sort_order: str = "asc",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -53,11 +55,33 @@ def get_surveys(
     
     surveys = query.order_by(Survey.created_at.desc()).all()
     
-    # Map target_user_ids for each survey
+    # Map target_user_ids and creator/updated fields for each survey
     results = []
     for s in surveys:
-        out = SurveyOut.model_validate(s).model_copy(update={"target_user_ids": [u.id for u in s.target_users]})
+        creator_name = s.creator.full_name if s.creator else "Unknown"
+        updated_val = s.updated_at if s.updated_at else s.created_at
+        out = SurveyOut.model_validate(s).model_copy(update={
+            "target_user_ids": [u.id for u in s.target_users],
+            "created_by_name": creator_name,
+            "updated_at": updated_val
+        })
         results.append(out)
+
+    if sort_by:
+        is_desc = sort_order.lower() == "desc"
+        if sort_by == "SurveyName":
+            results.sort(key=lambda x: (x.name or "").lower(), reverse=is_desc)
+        elif sort_by == "SurveyType":
+            results.sort(key=lambda x: (x.form_type or "").lower(), reverse=is_desc)
+        elif sort_by == "Status":
+            results.sort(key=lambda x: (x.status or "").lower(), reverse=is_desc)
+        elif sort_by == "CreatedBy":
+            results.sort(key=lambda x: (x.created_by_name or "").lower(), reverse=is_desc)
+        elif sort_by == "CreatedAt":
+            results.sort(key=lambda x: x.created_at.isoformat() if x.created_at else "", reverse=is_desc)
+        elif sort_by == "UpdatedAt":
+            results.sort(key=lambda x: x.updated_at.isoformat() if x.updated_at else "", reverse=is_desc)
+            
     return results
 
 @router.get("/{survey_id}", response_model=SurveyOut)
@@ -73,7 +97,13 @@ def get_survey(
     if not survey:
         raise HTTPException(status_code=404, detail="Survey not found")
     
-    out = SurveyOut.model_validate(survey).model_copy(update={"target_user_ids": [u.id for u in survey.target_users]})
+    creator_name = survey.creator.full_name if survey.creator else "Unknown"
+    updated_val = survey.updated_at if survey.updated_at else survey.created_at
+    out = SurveyOut.model_validate(survey).model_copy(update={
+        "target_user_ids": [u.id for u in survey.target_users],
+        "created_by_name": creator_name,
+        "updated_at": updated_val
+    })
     return out
 
 @router.post("/", response_model=SurveyOut)
