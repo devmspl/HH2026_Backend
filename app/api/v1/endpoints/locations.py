@@ -3,6 +3,7 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from app.core.auth import get_current_user
 from app.db.session import get_db
 from app.models.user import User, UserRole, Province, District, Region, Camp, RegionalCrop, CropFamily, NationalCrop, Customer, Report
@@ -352,9 +353,14 @@ def list_districts(
         elif current_user.province_id:
             query = query.filter(District.province_id == current_user.province_id)
     rows = query.all()
+    
+    # Optimize customer count query
+    counts = db.query(Customer.district_id, func.count(Customer.id)).group_by(Customer.district_id).all()
+    counts_dict = {district_id: count for district_id, count in counts if district_id}
+    
     result = []
     for d in rows:
-        count = db.query(Customer).filter(Customer.district_id == d.id).count()
+        count = counts_dict.get(d.id, 0)
         result.append({
             "id": d.id, 
             "name": d.name, 
@@ -388,9 +394,14 @@ def list_regions(
         elif current_user.district_id:
             query = query.filter(Region.district_id == current_user.district_id)
     rows = query.all()
+    
+    # Optimize customer count query
+    counts = db.query(Customer.region_id, func.count(Customer.id)).group_by(Customer.region_id).all()
+    counts_dict = {region_id: count for region_id, count in counts if region_id}
+    
     result = []
     for r in rows:
-        count = db.query(Customer).filter(Customer.region_id == r.id).count()
+        count = counts_dict.get(r.id, 0)
         result.append({
             "id": r.id, 
             "name": r.name, 
@@ -410,7 +421,7 @@ def list_camps(
     current_user: User = Depends(get_current_user),
     region_id: Optional[int] = None,
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=10000),
 ) -> Any:
     """List camps; optional filter by region_id with pagination."""
     skip = (page - 1) * limit
@@ -426,9 +437,13 @@ def list_camps(
             query = query.filter(Camp.region_id == current_user.region_id)
     total = query.count()
     rows = query.offset(skip).limit(limit).all()
+    # Optimize customer count query
+    counts = db.query(Customer.camp_id, func.count(Customer.id)).group_by(Customer.camp_id).all()
+    counts_dict = {camp_id: count for camp_id, count in counts if camp_id}
+    
     result = []
     for c in rows:
-        count = db.query(Customer).filter(Customer.camp_id == c.id).count()
+        count = counts_dict.get(c.id, 0)
         result.append({
             "id": c.id, 
             "name": c.name, 

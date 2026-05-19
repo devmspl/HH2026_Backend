@@ -54,16 +54,28 @@ def get_chat_groups(
             query = query.filter(ChatGroup.name.ilike(f"%{search}%"))
             
         total = query.count()
-        
-        total = query.count()
         groups = query.offset((page - 1) * limit).limit(limit).all()
         with open("chat_debug.log", "a") as f:
             f.write(f"\n[DEBUG CHAT] Super Admin - Page {page}, Limit {limit}, Found {len(groups)} groups for type {group_type}\n")
             if groups:
                 f.write(f"[DEBUG CHAT] Sample group type: {groups[0].group_type}\n")
         
+        items = []
+        for g in groups:
+            items.append({
+                "id": g.id,
+                "name": g.name,
+                "group_type": g.group_type,
+                "manager_id": g.manager_id,
+                "province_id": g.province_id,
+                "district_id": g.district_id,
+                "region_id": g.region_id,
+                "camp_id": g.camp_id,
+                "members": [{"id": m.id, "full_name": m.full_name, "role": m.role} for m in g.members]
+            })
+        
         return {
-            "items": groups,
+            "items": items,
             "total": total,
             "page": page,
             "limit": limit,
