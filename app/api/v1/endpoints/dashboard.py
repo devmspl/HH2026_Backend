@@ -286,6 +286,8 @@ def get_gis_tracking(
     sw_lat: Optional[float] = None,
     sw_lng: Optional[float] = None,
     status: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_order: str = "asc",
     page: int = 1,
     page_size: int = 50,
     current_user: User = Depends(get_current_user)
@@ -377,7 +379,19 @@ def get_gis_tracking(
         distance_expr.label("distance_km")
     )
     
-    agents = query.order_by(User.last_seen.desc().nullslast()).offset(skip).limit(limit).all()
+    order_clause = User.last_seen.desc().nullslast()
+    if sort_by:
+        is_desc = sort_order.lower() == "desc"
+        if sort_by == "agent":
+            order_clause = User.full_name.desc() if is_desc else User.full_name.asc()
+        elif sort_by == "distance":
+            order_clause = distance_expr.desc() if is_desc else distance_expr.asc()
+        elif sort_by == "last_seen":
+            order_clause = User.last_seen.desc().nullslast() if is_desc else User.last_seen.asc().nullsfirst()
+        elif sort_by == "status":
+            order_clause = User.is_active.desc() if is_desc else User.is_active.asc()
+
+    agents = query.order_by(order_clause).offset(skip).limit(limit).all()
     
     return {
         "items": [
