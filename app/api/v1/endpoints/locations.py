@@ -17,11 +17,13 @@ class CropFamilyCreate(BaseModel):
     family_name: str
     label: Optional[str] = None
     picture: Optional[str] = None
+    color: Optional[str] = None
 
 class CropFamilyUpdate(BaseModel):
     family_name: Optional[str] = None
     label: Optional[str] = None
     picture: Optional[str] = None
+    color: Optional[str] = None
 
 class NationalCropCreate(BaseModel):
     crop_name: str
@@ -140,7 +142,7 @@ def list_crop_families(
 ) -> Any:
     """List all crop families."""
     rows = db.query(CropFamily).order_by(CropFamily.family_name).all()
-    return [{"id": f.id, "family_name": f.family_name, "label": f.label, "picture": f.picture} for f in rows]
+    return [{"id": f.id, "family_name": f.family_name, "label": f.label, "picture": f.picture, "color": f.color} for f in rows]
 
 @router.post("/crop-families", response_model=Any)
 def create_crop_family(
@@ -155,11 +157,12 @@ def create_crop_family(
         family_name=payload.family_name,
         label=payload.label,
         picture=payload.picture,
+        color=payload.color,
     )
     db.add(family)
     db.commit()
     db.refresh(family)
-    return {"id": family.id, "family_name": family.family_name, "label": family.label, "picture": family.picture}
+    return {"id": family.id, "family_name": family.family_name, "label": family.label, "picture": family.picture, "color": family.color}
 
 @router.put("/crop-families/{family_id}", response_model=Any)
 def update_crop_family(
@@ -180,9 +183,11 @@ def update_crop_family(
         family.label = payload.label
     if payload.picture is not None:
         family.picture = payload.picture
+    if payload.color is not None:
+        family.color = payload.color
     db.commit()
     db.refresh(family)
-    return {"id": family.id, "family_name": family.family_name, "label": family.label, "picture": family.picture}
+    return {"id": family.id, "family_name": family.family_name, "label": family.label, "picture": family.picture, "color": family.color}
 
 @router.delete("/crop-families/{family_id}")
 def delete_crop_family(

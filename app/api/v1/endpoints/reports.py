@@ -1138,32 +1138,33 @@ def get_crop_domination_provinces(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from app.models.user import Province
+    from app.models.user import Province, CropFamily
     provinces = db.query(Province).all()
     
-    color_map = {
-        "Maize": "#F87171",      # Red
-        "Wheat": "#60A5FA",      # Blue
-        "Rice": "#4ADE80",       # Green
-        "Soybeans": "#FBBF24",   # Yellow/Orange
-        "Cassava": "#C084FC",    # Purple
-        "Sorghum": "#A78BFA",    # Indigo
-        "Millet": "#FACC15",     # Yellow
-        "Groundnuts": "#D97706", # Brown/Amber
-        "Cotton": "#93C5FD",     # Light Blue
-        "Tobacco": "#34D399",    # Emerald
-        "Sunflower": "#FDE047",  # Yellow
+    # Fetch all crop families to construct dynamic color map
+    db_families = db.query(CropFamily).all()
+    fallback_colors = {
         "Cereals": "#2ecc71",    # Green
+        "Grains": "#F59E0B",     # Amber
         "Legumes": "#3498db",    # Blue
         "Tubers": "#9b59b6",     # Purple
         "Vegetables": "#e74c3c", # Red
         "Fruits": "#f39c12",     # Orange
+        "Cash Crops": "#EAB308", # Yellow
+        "Oilseeds": "#D97706",   # Brown/Amber
         "Other": "#95a5a6"       # Gray
     }
+    color_map = {}
+    for f in db_families:
+        color_map[f.family_name] = f.color or fallback_colors.get(f.family_name, "#95a5a6")
+    
+    if "Other" not in color_map:
+        color_map["Other"] = fallback_colors["Other"]
+        
     default_color = "rgba(156, 163, 175, 0.4)"    # Transparent Gray for No Data
     
     result = []
-    query = db.query(Report).filter(Report.status == "approved")
+    query = db.query(Report).filter(Report.status.in_(["approved", "APPROVED"]))
     query = apply_hierarchy_filter(query, current_user)
     all_approved_reports = query.all()
     
@@ -1186,6 +1187,10 @@ def get_crop_domination_provinces(
                 data = json.loads(report.survey_data)
                 for crop in data.get("crops", []):
                     f_name = crop.get("family_name") or "Other"
+                    # Map Cereals from old survey data to Grains to match the current DB
+                    if f_name == "Cereals":
+                        f_name = "Grains"
+                    
                     f_yield = float(crop.get("yield_tonnes") or 0)
                     family_yields[f_name] = family_yields.get(f_name, 0) + f_yield
             except: continue

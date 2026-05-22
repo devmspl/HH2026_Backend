@@ -210,6 +210,7 @@ class CropFamily(Base):
     family_name = Column(String(255), nullable=False)
     label = Column(String(255), nullable=True)
     picture = Column(Text, nullable=True)
+    color = Column(String(50), nullable=True)
 
 class NationalCrop(Base):
     __tablename__ = "national_crops"
