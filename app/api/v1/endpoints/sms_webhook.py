@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime
+import uuid
 
 from app.db.session import get_db
 from app.models.user import (
@@ -254,6 +255,7 @@ async def receive_sms_webhook(
             title=f"SMS Submission: {survey.name}",
             description=description,
             status=ReportStatus.PENDING,
+            confirmation_no=f"CONF-{uuid.uuid4().hex[:8].upper()}",
             gps_lat=agent.last_lat or 0.0,
             gps_lng=agent.last_lng or 0.0,
             province_id=agent.province_id,
