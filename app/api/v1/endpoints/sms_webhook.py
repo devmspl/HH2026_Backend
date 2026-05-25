@@ -62,17 +62,23 @@ def _log_inbound_sms(db: Session, sender: str, message: str, received_at: str,
 @router.post("/receive", status_code=status.HTTP_200_OK)
 async def receive_sms_webhook(
     request: Request,
-    db: Session = Depends(get_db),
-    authorization: Optional[str] = Header(None),
-    username: Optional[str] = Header(None),
-    org_slug: Optional[str] = Header(None),
-    phone_number: Optional[str] = Header(None),
-    timestamp: Optional[str] = Header(None)
+    db: Session = Depends(get_db)
 ):
     """
     Webhook endpoint to receive incoming SMS survey data from Skewset SMS Gateway.
     Format expects auth and metadata in headers, and raw text in the body.
     """
+    # ── 0. Log All Headers for Debugging ──────────────────────────────────────
+    headers_dict = dict(request.headers)
+    logger.info(f"[SMS-WEBHOOK] Received Headers: {headers_dict}")
+
+    # Extract headers robustly (checking both underscored and hyphenated versions)
+    authorization = headers_dict.get("authorization")
+    username = headers_dict.get("username")
+    org_slug = headers_dict.get("org_slug") or headers_dict.get("org-slug")
+    phone_number = headers_dict.get("phone_number") or headers_dict.get("phone-number")
+    timestamp = headers_dict.get("timestamp")
+
     # ── 1. Authentication & Header Validation ─────────────────────────────────
     if authorization != EXPECTED_TOKEN:
         logger.warning(f"[SMS-WEBHOOK] Unauthorized access attempt. Token: {authorization}")
